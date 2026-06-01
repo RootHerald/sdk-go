@@ -1,60 +1,59 @@
-# Root Herald — Go SDK
+# rootherald-go
 
-Backend SDK for verifying [Root Herald](https://rootherald.io) device attestation JWTs from Go services. Includes `net/http`, `chi`, and `gin` middleware.
-
-## Install
+Server-side Go SDK for verifying RootHerald attestation tokens and CAEP webhook
+Security Event Tokens.
 
 ```bash
-go get github.com/RootHerald/sdk-go
+go get github.com/rootherald/rootherald-go
 ```
 
-## 30-second integration
+## Quick start
 
 ```go
-package main
+import rh "github.com/rootherald/rootherald-go"
 
-import (
-    "log"
-    "net/http"
-
-    rootherald "github.com/RootHerald/sdk-go"
-    rhchi "github.com/RootHerald/sdk-go/chi"
-    "github.com/go-chi/chi/v5"
+client := rh.NewClient("https://rootherald.io",
+    rh.WithIssuer("rootherald.io/myorg"),
+    rh.WithAudience("my-app"),
 )
 
-func main() {
-    client, err := rootherald.NewClient(
-        rootherald.WithIssuer("https://api.rootherald.io"),
-        rootherald.WithAudience("plat_your_client_id"),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    r := chi.NewRouter()
-    r.Use(rhchi.RequireAttestation(client))
-
-    r.Get("/me", func(w http.ResponseWriter, req *http.Request) {
-        verdict := rootherald.FromContext(req.Context())
-        w.Write([]byte("device: " + verdict.Device.DeviceID))
-    })
-
-    http.ListenAndServe(":8080", r)
+verdict, claims, err := client.Verify(ctx, token)
+if err != nil || verdict != rh.VerdictAllow {
+    http.Error(w, "denied", http.StatusUnauthorized)
+    return
 }
+log.Printf("device %s allowed", claims.Subject)
 ```
 
-## What you get
+## chi middleware
 
-- `rootherald.NewClient(...)` — handles JWKS fetch + caching automatically
-- `client.Verify(ctx, token)` — verifies a token, returns a strongly-typed `AttestationVerdict`
-- `rhchi.RequireAttestation` — chi router middleware
-- `rhgin.RequireAttestation` — gin middleware (in `github.com/RootHerald/sdk-go/gin`)
-- `rootherald.FromContext(ctx)` — typed access to the verdict from inside a handler
+```go
+import rhchi "github.com/rootherald/rootherald-go/chi"
 
-## Trust chain
+r := chi.NewRouter()
+r.Use(rhchi.Guard(rhchi.GuardConfig{
+    Verifier: client.Verifier(), Action: "signup",
+}))
+```
 
-The SDK fetches Root Herald's signing keys from `{issuer}/.well-known/jwks.json` and caches them (default 1 hour). Tokens are verified locally — no per-request call to Root Herald. Key rotation is handled automatically.
+## gin middleware
 
-## License
+```go
+import rhgin "github.com/rootherald/rootherald-go/gin"
 
-MIT. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+r := gin.Default()
+r.POST("/signup", rhgin.Guard(rhgin.GuardConfig{Verifier: client.Verifier()}), signupHandler)
+```
+
+## Webhooks
+
+```go
+v := rh.NewWebhookVerifier(
+    "https://rootherald.io/myorg",
+    "tenant-1",
+    "https://rootherald.io/.well-known/jwks.json",
+)
+event, err := v.Verify(string(reqBody))
+```
+
+See `examples/hello/` for a runnable end-to-end demo.
