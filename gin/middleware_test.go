@@ -13,7 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	rh "github.com/rootherald/rootherald-go"
+	rh "github.com/RootHerald/sdk-go"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
