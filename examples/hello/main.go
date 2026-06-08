@@ -9,8 +9,8 @@ import (
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	rh "github.com/rootherald/rootherald-go"
-	rhchi "github.com/rootherald/rootherald-go/chi"
+	rh "github.com/RootHerald/sdk-go"
+	rhchi "github.com/RootHerald/sdk-go/chi"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	rh "github.com/rootherald/rootherald-go"
+	rh "github.com/RootHerald/sdk-go"
 )
 
 type ctxKey int

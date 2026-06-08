@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	rh "github.com/rootherald/rootherald-go"
+	rh "github.com/RootHerald/sdk-go"
 )
 
 // GuardConfig customises the middleware.

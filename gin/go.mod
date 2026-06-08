@@ -1,10 +1,10 @@
-module github.com/rootherald/rootherald-go/gin
+module github.com/RootHerald/sdk-go/gin
 
 go 1.22
 
 require (
 	github.com/gin-gonic/gin v1.9.1
-	github.com/rootherald/rootherald-go v0.0.0
+	github.com/RootHerald/sdk-go v0.0.0
 )
 
-replace github.com/rootherald/rootherald-go => ../
+replace github.com/RootHerald/sdk-go => ../
