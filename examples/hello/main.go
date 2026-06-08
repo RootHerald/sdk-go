@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -35,9 +34,6 @@ func main() {
 			"device": c.Subject,
 		})
 	})
-
-	// Suppress unused-import in some toolchains
-	_, _ = client.Verify(context.Background(), "")
 
 	addr := envOr("ADDR", ":8080")
 	log.Printf("listening on %s (issuer=%s)", addr, issuer)
