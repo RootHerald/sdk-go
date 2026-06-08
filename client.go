@@ -49,7 +49,6 @@ func WithClientHTTPClient(h *http.Client) ClientOption {
 // WithJwksURI overrides the default {base}/.well-known/jwks.json location.
 func WithJwksURI(uri string) ClientOption {
 	return func(c *Client) {
-		c.verifier = nil // force re-build with custom URI
 		c.baseURL = strings.TrimRight(c.baseURL, "/")
 		c.verifier = NewVerifier(c.issuer, c.audience, uri)
 	}
@@ -73,7 +72,6 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 // Verify checks the token locally using the cached JWKS. It returns
 // VerdictAllow on success or an error explaining the rejection.
 func (c *Client) Verify(ctx context.Context, token string) (Verdict, AttestationClaims, error) {
-	_ = ctx // reserved for future cancellation hookups
 	claims, err := c.verifier.Verify(token)
 	if err != nil {
 		return VerdictDeny, AttestationClaims{}, err
