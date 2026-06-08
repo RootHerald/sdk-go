@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
-	rh "github.com/rootherald/rootherald-go"
+	rh "github.com/RootHerald/sdk-go"
 )
 
 func newRSA(t *testing.T) *rsa.PrivateKey {

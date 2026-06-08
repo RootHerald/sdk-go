@@ -4,13 +4,13 @@ Server-side Go SDK for verifying RootHerald attestation tokens and CAEP webhook
 Security Event Tokens.
 
 ```bash
-go get github.com/rootherald/rootherald-go
+go get github.com/RootHerald/sdk-go
 ```
 
 ## Quick start
 
 ```go
-import rh "github.com/rootherald/rootherald-go"
+import rh "github.com/RootHerald/sdk-go"
 
 client := rh.NewClient("https://rootherald.io",
     rh.WithIssuer("rootherald.io/myorg"),
@@ -28,7 +28,7 @@ log.Printf("device %s allowed", claims.Subject)
 ## chi middleware
 
 ```go
-import rhchi "github.com/rootherald/rootherald-go/chi"
+import rhchi "github.com/RootHerald/sdk-go/chi"
 
 r := chi.NewRouter()
 r.Use(rhchi.Guard(rhchi.GuardConfig{
@@ -39,7 +39,7 @@ r.Use(rhchi.Guard(rhchi.GuardConfig{
 ## gin middleware
 
 ```go
-import rhgin "github.com/rootherald/rootherald-go/gin"
+import rhgin "github.com/RootHerald/sdk-go/gin"
 
 r := gin.Default()
 r.POST("/signup", rhgin.Guard(rhgin.GuardConfig{Verifier: client.Verifier()}), signupHandler)
