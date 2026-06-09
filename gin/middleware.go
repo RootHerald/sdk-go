@@ -30,9 +30,6 @@ func Guard(cfg GuardConfig) gin.HandlerFunc {
 	if cfg.Verifier == nil {
 		panic("rhgin.Guard: Verifier is required")
 	}
-	if len(cfg.Verdicts) == 0 {
-		cfg.Verdicts = []string{string(rh.VerdictAllow)}
-	}
 	if cfg.TokenHeader == "" {
 		cfg.TokenHeader = "X-RootHerald-Token"
 	}

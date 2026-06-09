@@ -37,9 +37,6 @@ func Guard(cfg GuardConfig) func(http.Handler) http.Handler {
 	if cfg.Verifier == nil {
 		panic("rhchi.Guard: Verifier is required")
 	}
-	if len(cfg.Verdicts) == 0 {
-		cfg.Verdicts = []string{string(rh.VerdictAllow)}
-	}
 	if cfg.TokenHeader == "" {
 		cfg.TokenHeader = "X-RootHerald-Token"
 	}
