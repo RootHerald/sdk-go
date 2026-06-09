@@ -96,16 +96,7 @@ func (w *WebhookVerifier) Verify(setJwt string) (WebhookEvent, error) {
 	}
 	out.JTI, _ = raw["jti"].(string)
 	out.Issuer, _ = raw["iss"].(string)
-	switch a := raw["aud"].(type) {
-	case string:
-		out.Audience = []string{a}
-	case []interface{}:
-		for _, v := range a {
-			if s, ok := v.(string); ok {
-				out.Audience = append(out.Audience, s)
-			}
-		}
-	}
+	out.Audience = audienceStrings(raw["aud"])
 	if t, ok := readUnix(raw, "iat"); ok {
 		out.IssuedAt = t
 	}

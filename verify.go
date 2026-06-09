@@ -148,6 +148,24 @@ func audienceMatches(aud interface{}, want string) bool {
 	return false
 }
 
+// audienceStrings normalises a JWT "aud" claim (string or []interface{}) to a
+// slice of strings, dropping non-string entries. Returns nil for other shapes.
+func audienceStrings(aud interface{}) []string {
+	switch a := aud.(type) {
+	case string:
+		return []string{a}
+	case []interface{}:
+		var out []string
+		for _, v := range a {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func readUnix(c jwt.MapClaims, key string) (time.Time, bool) {
 	switch v := c[key].(type) {
 	case float64:
@@ -172,16 +190,7 @@ func claimsFromMap(raw jwt.MapClaims) AttestationClaims {
 	if s, ok := raw["iss"].(string); ok {
 		c.Issuer = s
 	}
-	switch a := raw["aud"].(type) {
-	case string:
-		c.Audience = []string{a}
-	case []interface{}:
-		for _, v := range a {
-			if s, ok := v.(string); ok {
-				c.Audience = append(c.Audience, s)
-			}
-		}
-	}
+	c.Audience = audienceStrings(raw["aud"])
 	if t, ok := readUnix(raw, "exp"); ok {
 		c.ExpiresAt = t
 	}
@@ -214,12 +223,6 @@ func claimsFromMap(raw jwt.MapClaims) AttestationClaims {
 // ---------------------------------------------------------------------------
 // JWKS cache
 // ---------------------------------------------------------------------------
-
-type jwksKey struct {
-	kty, kid, alg string
-	n, e          string // RSA
-	x, y, crv     string // EC
-}
 
 type jwksCache struct {
 	url   string
@@ -320,10 +323,9 @@ func (r jwksKeyRaw) toPublicKey() (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		eb := big.NewInt(0).SetBytes(e)
 		return &rsa.PublicKey{
 			N: new(big.Int).SetBytes(n),
-			E: int(eb.Int64()),
+			E: int(new(big.Int).SetBytes(e).Int64()),
 		}, nil
 	case "EC":
 		x, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(r.X, "="))
