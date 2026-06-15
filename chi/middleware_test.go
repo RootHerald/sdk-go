@@ -58,7 +58,7 @@ func TestGuard_Allow(t *testing.T) {
 	jwksURL := startJwks(t, key, "k1")
 	verifier := rh.NewVerifier("iss", "aud", jwksURL)
 	tok := sign(t, key, "k1", jwt.MapClaims{
-		"iss": "iss", "aud": "aud", "sub": "device-1",
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "pass",
 		"exp": time.Now().Add(time.Minute).Unix(),
 	})
 
@@ -114,7 +114,7 @@ func TestGuard_AuthorizationHeader(t *testing.T) {
 	jwksURL := startJwks(t, key, "k1")
 	verifier := rh.NewVerifier("iss", "aud", jwksURL)
 	tok := sign(t, key, "k1", jwt.MapClaims{
-		"iss": "iss", "aud": "aud", "sub": "device-1",
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "pass",
 		"exp": time.Now().Add(time.Minute).Unix(),
 	})
 	r := chi.NewRouter()
@@ -143,5 +143,53 @@ func TestGuard_503OnJwksDown(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 503 {
 		t.Errorf("status = %d", w.Code)
+	}
+}
+
+// A token that verifies but carries a non-accepted verdict (here "fail" -> deny)
+// must be rejected with 403, proving the Verdicts knob is actually enforced.
+func TestGuard_403OnRejectedVerdict(t *testing.T) {
+	key := newRSA(t)
+	jwksURL := startJwks(t, key, "k1")
+	verifier := rh.NewVerifier("iss", "aud", jwksURL)
+	tok := sign(t, key, "k1", jwt.MapClaims{
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "fail",
+		"exp": time.Now().Add(time.Minute).Unix(),
+	})
+	r := chi.NewRouter()
+	r.With(Guard(GuardConfig{Verifier: verifier})).Get("/ok", func(w http.ResponseWriter, req *http.Request) {
+		t.Error("handler should not run for a rejected verdict")
+	})
+	req := httptest.NewRequest("GET", "/ok", nil)
+	req.Header.Set("X-RootHerald-Token", tok)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+}
+
+// With a permissive Verdicts set, a "review"/"warn" token is allowed through.
+func TestGuard_AcceptsConfiguredVerdict(t *testing.T) {
+	key := newRSA(t)
+	jwksURL := startJwks(t, key, "k1")
+	verifier := rh.NewVerifier("iss", "aud", jwksURL)
+	tok := sign(t, key, "k1", jwt.MapClaims{
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "warn",
+		"exp": time.Now().Add(time.Minute).Unix(),
+	})
+	r := chi.NewRouter()
+	r.With(Guard(GuardConfig{
+		Verifier: verifier,
+		Verdicts: []string{string(rh.VerdictAllow), string(rh.VerdictReview)},
+	})).Get("/ok", func(w http.ResponseWriter, req *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	})
+	req := httptest.NewRequest("GET", "/ok", nil)
+	req.Header.Set("X-RootHerald-Token", tok)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
 	}
 }

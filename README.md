@@ -25,6 +25,18 @@ if err != nil || verdict != rh.VerdictAllow {
 log.Printf("device %s allowed", claims.Subject)
 ```
 
+`Verify` checks the token offline against the issuer's JWKS and returns the
+verdict the token carries. The platform's raw `verdict` claim maps to the SDK
+enum as: `pass` → `VerdictAllow`, `fail` → `VerdictDeny`, `warn` →
+`VerdictReview`. A missing or unrecognised verdict maps to `VerdictReview`
+(fail-closed), so always check the returned `Verdict` — a token with a valid
+signature can still carry a non-allow verdict.
+
+> **Note:** verification is offline (JWKS) only. There is no hosted
+> `POST /api/v1/verify` endpoint; the `VerifyOnline` method targets a
+> self-hosted verification service and will not work against the stock
+> RootHerald deployment.
+
 ## chi middleware
 
 ```go
@@ -33,6 +45,9 @@ import rhchi "github.com/RootHerald/sdk-go/chi"
 r := chi.NewRouter()
 r.Use(rhchi.Guard(rhchi.GuardConfig{
     Verifier: client.Verifier(), Action: "signup",
+    // Accepted verdicts (default ["allow"]); a verified token whose verdict
+    // is not in this set is rejected with 403.
+    Verdicts: []string{"allow"},
 }))
 ```
 
