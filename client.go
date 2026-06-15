@@ -69,18 +69,31 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 	return c
 }
 
-// Verify checks the token locally using the cached JWKS. It returns
-// VerdictAllow on success or an error explaining the rejection.
+// Verify checks the token locally using the cached JWKS. On success it returns
+// the verdict carried by the token (mapped from the platform's "verdict" claim:
+// "pass" -> VerdictAllow, "fail" -> VerdictDeny, "warn" -> VerdictReview;
+// missing/unknown -> VerdictReview). A signature/expiry/issuer/audience failure
+// returns VerdictDeny plus an error. Note: a structurally valid token can still
+// carry a non-allow verdict, so callers MUST check the returned Verdict, not
+// just the error.
 func (c *Client) Verify(ctx context.Context, token string) (Verdict, AttestationClaims, error) {
 	claims, err := c.verifier.Verify(token)
 	if err != nil {
 		return VerdictDeny, AttestationClaims{}, err
 	}
-	return VerdictAllow, claims, nil
+	return claims.Verdict, claims, nil
 }
 
-// VerifyOnline POSTs the token to the verifier and returns its verdict and
-// risk score. Use this when policy freshness matters more than latency.
+// VerifyOnline POSTs the token to a {base}/api/v1/verify endpoint and returns
+// its verdict and risk score.
+//
+// NOT-YET-AVAILABLE: the hosted RootHerald platform does not currently expose a
+// POST /api/v1/verify endpoint — the supported verification path is offline
+// JWKS verification via Verify / Verifier. This method is retained for callers
+// who front their own verification service that speaks the {verdict, reason,
+// risk_score} JSON shape; against the stock RootHerald deployment it will fail
+// (the endpoint does not exist). Prefer Verify unless you operate such a
+// service yourself.
 func (c *Client) VerifyOnline(ctx context.Context, token, action string) (VerifyResult, error) {
 	body, err := json.Marshal(map[string]string{
 		"token":  token,
@@ -116,7 +129,8 @@ func (c *Client) VerifyOnline(ctx context.Context, token, action string) (Verify
 		return VerifyResult{}, fmt.Errorf("%w: malformed response: %v", ErrVerifierHTTP, err)
 	}
 	if out.Verdict == "" {
-		out.Verdict = VerdictAllow
+		// Fail closed: a response with no verdict is not silently an allow.
+		out.Verdict = VerdictReview
 	}
 	if out.Verdict != VerdictDeny {
 		if c, err := c.verifier.Verify(token); err == nil {

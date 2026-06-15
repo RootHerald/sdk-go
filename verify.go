@@ -197,6 +197,20 @@ func claimsFromMap(raw jwt.MapClaims) AttestationClaims {
 	if s, ok := raw["eat_profile"].(string); ok {
 		c.EATProfile = s
 	}
+	// The platform emits the attestation verdict as a flat top-level "verdict"
+	// claim ("pass"/"fail"/"warn"); also mirrored in rootherald_device.verdict.
+	// Map it to the SDK enum so callers and middleware see a real verdict.
+	if s, ok := raw["verdict"].(string); ok {
+		c.Verdict = mapVerdict(s)
+	} else if dev, ok := raw["rootherald_device"].(map[string]interface{}); ok {
+		if s, ok := dev["verdict"].(string); ok {
+			c.Verdict = mapVerdict(s)
+		} else {
+			c.Verdict = mapVerdict("")
+		}
+	} else {
+		c.Verdict = mapVerdict("")
+	}
 	c.Device.UEID, _ = raw["ueid"].(string)
 	c.Device.HWModel, _ = raw["hwmodel"].(string)
 	c.Device.Dbgstat, _ = raw["dbgstat"].(string)
