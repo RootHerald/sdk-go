@@ -22,6 +22,31 @@ type DeviceClaims struct {
 	EARState int    `json:"ear_status,omitempty"`
 }
 
+// DeviceVerdict is the typed view of the Background-Check verify response's
+// verdict.device object. Cohort fields are ADDITIVE and advisory only (never a
+// trust gate); the server populates them when a quote-bound event log was
+// supplied and omits them otherwise — hence the pointer/omitempty fields, which
+// stay nil/absent when the server did not return them.
+type DeviceVerdict struct {
+	UEID            string `json:"ueid,omitempty"`
+	EARStatus       string `json:"earStatus,omitempty"`
+	Verdict         string `json:"verdict,omitempty"`
+	AttestationType string `json:"attestationType,omitempty"`
+
+	// CohortKey identifies the cohort this device was bucketed into.
+	CohortKey *string `json:"cohortKey,omitempty"`
+	// CohortScope is the cohort comparison scope ("global" | "tenant-fleet").
+	CohortScope *string `json:"cohortScope,omitempty"`
+	// CohortPrevalence is the fraction of the cohort sharing this profile (nil if unknown).
+	CohortPrevalence *float64 `json:"cohortPrevalence,omitempty"`
+	// CohortPrevalencePerPcr maps a PCR index to its prevalence fraction.
+	CohortPrevalencePerPcr map[string]float64 `json:"cohortPrevalencePerPcr,omitempty"`
+	// CohortSampleSize is the number of devices in the cohort sample (nil if unknown).
+	CohortSampleSize *int64 `json:"cohortSampleSize,omitempty"`
+	// NovelProfile reports whether this is a previously-unseen profile (nil if not evaluated).
+	NovelProfile *bool `json:"novelProfile,omitempty"`
+}
+
 // AttestationClaims is the decoded RootHerald attestation token.
 type AttestationClaims struct {
 	Subject    string    `json:"sub"`

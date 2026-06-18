@@ -14,7 +14,7 @@ import (
 
 // DefaultBaseURL is the production RootHerald API base URL used by AttestClient
 // when no base URL is supplied.
-const DefaultBaseURL = "https://api.rootherald.com"
+const DefaultBaseURL = "https://api.rootherald.io"
 
 // secretKeyPrefix marks a RootHerald secret key. Publishable keys (rh_pk_) must
 // never be used server-side and are rejected by NewAttestClient.
@@ -92,6 +92,10 @@ type AttestOptions struct {
 type AttestResult struct {
 	Verdict Verdict
 	Token   string // present only when AttestOptions.ReturnToken was true
+	// Device is the typed view of the server's verdict.device object, including
+	// the additive, advisory-only cohort fields. It is nil if the response
+	// carried no device object.
+	Device *DeviceVerdict
 	// Raw is the full decoded verdict object as returned by the server, for
 	// callers that need fields the typed surface does not expose yet.
 	Raw map[string]any
@@ -207,8 +211,28 @@ func (c *AttestClient) Attest(ctx context.Context, evidence Evidence, opts Attes
 	return AttestResult{
 		Verdict: mapVerdict(raw),
 		Token:   resp.Token,
+		Device:  parseDeviceVerdict(resp.Verdict["device"]),
 		Raw:     resp.Verdict,
 	}, nil
+}
+
+// parseDeviceVerdict decodes the verdict.device object (already an any from the
+// generic JSON decode) into a typed *DeviceVerdict, carrying the additive cohort
+// fields. Returns nil when no device object is present or it cannot be decoded;
+// the raw verdict map remains available on AttestResult.Raw regardless.
+func parseDeviceVerdict(device any) *DeviceVerdict {
+	if device == nil {
+		return nil
+	}
+	b, err := json.Marshal(device)
+	if err != nil {
+		return nil
+	}
+	var dv DeviceVerdict
+	if err := json.Unmarshal(b, &dv); err != nil {
+		return nil
+	}
+	return &dv
 }
 
 // post issues an authenticated JSON POST and decodes the 2xx body into out,
