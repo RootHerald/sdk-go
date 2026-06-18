@@ -87,13 +87,11 @@ func (c *Client) Verify(ctx context.Context, token string) (Verdict, Attestation
 // VerifyOnline POSTs the token to a {base}/api/v1/verify endpoint and returns
 // its verdict and risk score.
 //
-// NOT-YET-AVAILABLE: the hosted RootHerald platform does not currently expose a
-// POST /api/v1/verify endpoint — the supported verification path is offline
-// JWKS verification via Verify / Verifier. This method is retained for callers
-// who front their own verification service that speaks the {verdict, reason,
-// risk_score} JSON shape; against the stock RootHerald deployment it will fail
-// (the endpoint does not exist). Prefer Verify unless you operate such a
-// service yourself.
+// DEPRECATED / NOT-YET-AVAILABLE: this targets a self-hosted {verdict, reason,
+// risk_score} service and does not exist on the stock RootHerald deployment.
+// For the server -> server appraisal path use AttestClient (NewAttestClient +
+// CreateChallenge/Attest); for offline badge-tier checks use Verify. This
+// method is retained only for callers fronting their own such service.
 func (c *Client) VerifyOnline(ctx context.Context, token, action string) (VerifyResult, error) {
 	body, err := json.Marshal(map[string]string{
 		"token":  token,
