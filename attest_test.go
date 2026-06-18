@@ -78,6 +78,79 @@ func TestAttestClient_AttestPassVerdict(t *testing.T) {
 	}
 }
 
+// Cohort fields on verdict.device parse into the typed Device view.
+func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict": map[string]any{
+				"verdict":                "pass",
+				"ueid":                   "dev-9",
+				"cohortKey":              "tpm20:win11:sb1:abc123",
+				"cohortScope":            "tenant-fleet",
+				"cohortPrevalence":       0.042,
+				"cohortPrevalencePerPcr": map[string]any{"0": 0.9, "7": 0.5},
+				"cohortSampleSize":       1287,
+				"novelProfile":           false,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+		AttestOptions{ChallengeID: "ch_1"})
+	if err != nil {
+		t.Fatalf("Attest: %v", err)
+	}
+	if res.Device == nil {
+		t.Fatal("Device is nil; want parsed cohort fields")
+	}
+	if res.Device.CohortKey == nil || *res.Device.CohortKey != "tpm20:win11:sb1:abc123" {
+		t.Errorf("CohortKey = %v", res.Device.CohortKey)
+	}
+	if res.Device.CohortScope == nil || *res.Device.CohortScope != "tenant-fleet" {
+		t.Errorf("CohortScope = %v", res.Device.CohortScope)
+	}
+	if res.Device.CohortPrevalence == nil || *res.Device.CohortPrevalence != 0.042 {
+		t.Errorf("CohortPrevalence = %v", res.Device.CohortPrevalence)
+	}
+	if res.Device.CohortSampleSize == nil || *res.Device.CohortSampleSize != 1287 {
+		t.Errorf("CohortSampleSize = %v", res.Device.CohortSampleSize)
+	}
+	if res.Device.NovelProfile == nil || *res.Device.NovelProfile != false {
+		t.Errorf("NovelProfile = %v", res.Device.NovelProfile)
+	}
+	if got := res.Device.CohortPrevalencePerPcr["7"]; got != 0.5 {
+		t.Errorf("CohortPrevalencePerPcr[7] = %v, want 0.5", got)
+	}
+}
+
+// Cohort fields stay nil when the server omits them.
+func TestAttestClient_AttestNoCohortFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict": map[string]any{"verdict": "pass", "ueid": "dev-9"},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+		AttestOptions{ChallengeID: "ch_1"})
+	if err != nil {
+		t.Fatalf("Attest: %v", err)
+	}
+	if res.Device == nil {
+		t.Fatal("Device is nil; want a parsed (cohort-empty) device")
+	}
+	if res.Device.CohortKey != nil || res.Device.CohortPrevalence != nil || res.Device.NovelProfile != nil {
+		t.Errorf("expected nil cohort fields, got key=%v prev=%v novel=%v",
+			res.Device.CohortKey, res.Device.CohortPrevalence, res.Device.NovelProfile)
+	}
+}
+
 // An un-enrolled / failing device is a verdict, not an error.
 func TestAttestClient_AttestFailVerdictNotError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
