@@ -29,6 +29,25 @@ func TestClient_VerifyOffline(t *testing.T) {
 	}
 }
 
+// Client.Verify must return the token's actual verdict, not a hardcoded allow.
+func TestClient_VerifyReturnsNonAllowVerdict(t *testing.T) {
+	m := newMockSigner(t, "k1")
+	jwksURL, _, _ := startJwks(t, m, "")
+	claims := sampleClaims("https://issuer.example", "rp-1", "device-1",
+		time.Now().Add(time.Minute))
+	claims["verdict"] = "fail"
+	tok := m.sign(t, claims, "JWT")
+	c := NewClient("http://unused", WithIssuer("https://issuer.example"),
+		WithAudience("rp-1"), WithJwksURI(jwksURL))
+	verdict, _, err := c.Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if verdict != VerdictDeny {
+		t.Errorf("verdict = %s, want deny", verdict)
+	}
+}
+
 func TestClient_VerifyOfflineRejectsExpired(t *testing.T) {
 	m := newMockSigner(t, "k1")
 	jwksURL, _, _ := startJwks(t, m, "")

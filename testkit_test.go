@@ -88,6 +88,7 @@ func sampleClaims(issuer, aud, sub string, exp time.Time) jwt.MapClaims {
 		"iat":         time.Now().Unix(),
 		"eat_nonce":   "bm9uY2U",
 		"eat_profile": "tag:rootherald.io,2026:tpm-passport",
+		"verdict":     "pass",
 		"ueid":        "ek-fingerprint",
 		"hwmodel":     "TestModel",
 		"dbgstat":     "3",
