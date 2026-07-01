@@ -30,6 +30,50 @@ func TestVerifier_ValidToken(t *testing.T) {
 	}
 }
 
+// The verifier must surface the token's real verdict, not a hardcoded allow.
+func TestVerifier_ParsesVerdict(t *testing.T) {
+	m := newMockSigner(t, "k1")
+	jwksURL, _, _ := startJwks(t, m, "")
+	cases := map[string]Verdict{
+		"pass":    VerdictAllow,
+		"fail":    VerdictDeny,
+		"warn":    VerdictReview,
+		"unknown": VerdictReview, // unknown -> fail-closed default
+	}
+	for raw, want := range cases {
+		claims := sampleClaims("https://issuer.example", "rp-1", "device-1",
+			time.Now().Add(time.Minute))
+		claims["verdict"] = raw
+		tok := m.sign(t, claims, "JWT")
+		v := NewVerifier("https://issuer.example", "rp-1", jwksURL)
+		c, err := v.Verify(tok)
+		if err != nil {
+			t.Fatalf("verdict %q: Verify: %v", raw, err)
+		}
+		if c.Verdict != want {
+			t.Errorf("verdict %q -> %q, want %q", raw, c.Verdict, want)
+		}
+	}
+}
+
+// A token carrying no verdict claim must default fail-closed (not allow).
+func TestVerifier_MissingVerdictDefaultsReview(t *testing.T) {
+	m := newMockSigner(t, "k1")
+	jwksURL, _, _ := startJwks(t, m, "")
+	claims := sampleClaims("https://issuer.example", "rp-1", "device-1",
+		time.Now().Add(time.Minute))
+	delete(claims, "verdict")
+	tok := m.sign(t, claims, "JWT")
+	v := NewVerifier("https://issuer.example", "rp-1", jwksURL)
+	c, err := v.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if c.Verdict != VerdictReview {
+		t.Errorf("missing verdict -> %q, want review", c.Verdict)
+	}
+}
+
 func TestVerifier_RejectExpired(t *testing.T) {
 	m := newMockSigner(t, "k1")
 	jwksURL, _, _ := startJwks(t, m, "")

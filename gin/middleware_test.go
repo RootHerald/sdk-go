@@ -59,7 +59,7 @@ func TestGuard_Allow(t *testing.T) {
 	jwksURL := startJwks(t, key, "k1")
 	verifier := rh.NewVerifier("iss", "aud", jwksURL)
 	tok := sign(t, key, "k1", jwt.MapClaims{
-		"iss": "iss", "aud": "aud", "sub": "device-1",
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "pass",
 		"exp": time.Now().Add(time.Minute).Unix(),
 	})
 
@@ -124,5 +124,28 @@ func TestGuard_503OnJwksDown(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 503 {
 		t.Errorf("status = %d", w.Code)
+	}
+}
+
+// A token that verifies but carries a non-accepted verdict must be 403'd,
+// proving the Verdicts knob is enforced and not a dead config field.
+func TestGuard_403OnRejectedVerdict(t *testing.T) {
+	key := newRSA(t)
+	jwksURL := startJwks(t, key, "k1")
+	verifier := rh.NewVerifier("iss", "aud", jwksURL)
+	tok := sign(t, key, "k1", jwt.MapClaims{
+		"iss": "iss", "aud": "aud", "sub": "device-1", "verdict": "fail",
+		"exp": time.Now().Add(time.Minute).Unix(),
+	})
+	r := gin.New()
+	r.GET("/ok", Guard(GuardConfig{Verifier: verifier}), func(c *gin.Context) {
+		t.Error("handler should not run for a rejected verdict")
+	})
+	req := httptest.NewRequest("GET", "/ok", nil)
+	req.Header.Set("X-RootHerald-Token", tok)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
 	}
 }

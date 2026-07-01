@@ -12,8 +12,11 @@ import (
 
 // GuardConfig customises the middleware.
 type GuardConfig struct {
-	Verifier    *rh.Verifier
-	Action      string
+	Verifier *rh.Verifier
+	Action   string
+	// Verdicts is the set of accepted verdicts (default: ["allow"]). A verified
+	// token whose verdict is not in this set is rejected with 403. Values are the
+	// SDK verdict strings: "allow", "deny", "review".
 	Verdicts    []string
 	TokenHeader string
 }
@@ -24,6 +27,7 @@ const claimsKey = "rootherald.claims"
 //
 // Status codes:
 //   - 401 missing / malformed / expired / wrong-signature
+//   - 403 verified but verdict not in cfg.Verdicts
 //   - 503 JWKS unreachable
 //   - 200 verified — claims available via c.MustGet("rootherald.claims") or Claims(c)
 func Guard(cfg GuardConfig) gin.HandlerFunc {
@@ -54,6 +58,11 @@ func Guard(cfg GuardConfig) gin.HandlerFunc {
 				gin.H{"error": "rootherald: " + err.Error()})
 			return
 		}
+		if !verdictAccepted(cfg.Verdicts, claims.Verdict) {
+			c.AbortWithStatusJSON(http.StatusForbidden,
+				gin.H{"error": "rootherald: verdict not accepted: " + string(claims.Verdict)})
+			return
+		}
 		c.Set(claimsKey, claims)
 		c.Next()
 	}
@@ -68,6 +77,15 @@ func Claims(c *gin.Context) (rh.AttestationClaims, bool) {
 	}
 	out, ok := v.(rh.AttestationClaims)
 	return out, ok
+}
+
+func verdictAccepted(accepted []string, v rh.Verdict) bool {
+	for _, a := range accepted {
+		if a == string(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractToken(r *http.Request, header string) string {
