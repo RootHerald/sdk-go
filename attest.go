@@ -126,8 +126,11 @@ func WithBaseURL(baseURL string) AttestClientOption {
 	return func(c *AttestClient) { c.baseURL = strings.TrimRight(baseURL, "/") }
 }
 
-// WithHTTPClient swaps the underlying *http.Client (timeouts, proxies, tests).
-func WithHTTPClient(h *http.Client) AttestClientOption {
+// WithAttestHTTPClient swaps the underlying *http.Client (timeouts, proxies,
+// tests). Named distinctly from the Verifier's WithHTTPClient (and mirroring
+// client.go's WithClientHTTPClient) because Go package-level identifiers share
+// one namespace.
+func WithAttestHTTPClient(h *http.Client) AttestClientOption {
 	return func(c *AttestClient) { c.http = h }
 }
 
@@ -152,11 +155,11 @@ func NewAttestClient(secretKey string, opts ...AttestClientOption) (*AttestClien
 	return c, nil
 }
 
-// CreateChallenge mints a relay-friendly nonce via
+// IssueChallenge mints a relay-friendly nonce via
 // POST {baseURL}/api/v1/attestations/challenge. deviceHint is optional and may
 // be "" to omit it. Relay the returned Nonce to the client; the client quotes
-// over it, then submit the resulting evidence with Attest using ChallengeID.
-func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
+// over it, then submit the resulting evidence with Verify using ChallengeID.
+func (c *AttestClient) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
 	body := map[string]string{}
 	if deviceHint != "" {
 		body["deviceHint"] = deviceHint
@@ -171,21 +174,31 @@ func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (
 	return out, nil
 }
 
+// CreateChallenge is a deprecated alias for IssueChallenge, renamed for the
+// Client ABI 2.0 backend-relay contract.
+//
+// Deprecated: use IssueChallenge.
+func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
+	return c.IssueChallenge(ctx, deviceHint)
+}
+
 // verifyResponseBody is the wire shape of the verify endpoint.
 type verifyResponseBody struct {
 	Verdict map[string]any `json:"verdict"`
 	Token   string         `json:"token,omitempty"`
 }
 
-// Attest submits the opaque evidence blob for server-side appraisal via
+// Verify submits the opaque evidence blob for server-side appraisal via
 // POST {baseURL}/api/v1/attestations/verify and returns the verdict (plus an
-// optional signed EAT when opts.ReturnToken is true).
+// optional signed EAT when opts.ReturnToken is true). The verdict is computed by
+// RootHerald and returned here, to the customer's backend — it never travels
+// through the client, which holds no key and gets no verdict.
 //
 // An un-enrolled / failing device is NOT an error — it returns a normal verdict
 // carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems return
 // a non-nil error (see the package sentinels). evidence is passed through
 // verbatim.
-func (c *AttestClient) Attest(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
+func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
 	if opts.ChallengeID == "" {
 		return AttestResult{}, fmt.Errorf("%w: Attest requires ChallengeID (from CreateChallenge)", ErrChallenge)
 	}
@@ -216,6 +229,14 @@ func (c *AttestClient) Attest(ctx context.Context, evidence Evidence, opts Attes
 	}, nil
 }
 
+// Attest is a deprecated alias for Verify, renamed for the Client ABI 2.0
+// backend-relay contract.
+//
+// Deprecated: use Verify.
+func (c *AttestClient) Attest(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
+	return c.Verify(ctx, evidence, opts)
+}
+
 // parseDeviceVerdict decodes the verdict.device object (already an any from the
 // generic JSON decode) into a typed *DeviceVerdict, carrying the additive cohort
 // fields. Returns nil when no device object is present or it cannot be decoded;
@@ -235,16 +256,18 @@ func parseDeviceVerdict(device any) *DeviceVerdict {
 	return &dv
 }
 
-// post issues an authenticated JSON POST and decodes the 2xx body into out,
-// mapping non-2xx responses to the matching typed error.
-func (c *AttestClient) post(ctx context.Context, path string, body any, out any) error {
+// rawPost issues an authenticated JSON POST and returns the raw *http.Response.
+// It maps only transport failures to ErrAttestHTTP; status interpretation is
+// left to the caller (used by relay legs that must inspect specific statuses
+// such as the enroll 409). The caller owns closing resp.Body.
+func (c *AttestClient) rawPost(ctx context.Context, path string, body any) (*http.Response, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("%w: marshal request: %v", ErrAttestHTTP, err)
+		return nil, fmt.Errorf("%w: marshal request: %v", ErrAttestHTTP, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrAttestHTTP, err)
+		return nil, fmt.Errorf("%w: %v", ErrAttestHTTP, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -252,7 +275,17 @@ func (c *AttestClient) post(ctx context.Context, path string, body any, out any)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrAttestHTTP, err)
+		return nil, fmt.Errorf("%w: %v", ErrAttestHTTP, err)
+	}
+	return resp, nil
+}
+
+// post issues an authenticated JSON POST and decodes the 2xx body into out,
+// mapping non-2xx responses to the matching typed error.
+func (c *AttestClient) post(ctx context.Context, path string, body any, out any) error {
+	resp, err := c.rawPost(ctx, path, body)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 

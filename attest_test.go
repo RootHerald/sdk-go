@@ -84,14 +84,16 @@ func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"verdict": map[string]any{
-				"verdict":                "pass",
-				"ueid":                   "dev-9",
-				"cohortKey":              "tpm20:win11:sb1:abc123",
-				"cohortScope":            "tenant-fleet",
-				"cohortPrevalence":       0.042,
-				"cohortPrevalencePerPcr": map[string]any{"0": 0.9, "7": 0.5},
-				"cohortSampleSize":       1287,
-				"novelProfile":           false,
+				"verdict": "pass",
+				"device": map[string]any{
+					"ueid":                   "dev-9",
+					"cohortKey":              "tpm20:win11:sb1:abc123",
+					"cohortScope":            "tenant-fleet",
+					"cohortPrevalence":       0.042,
+					"cohortPrevalencePerPcr": map[string]any{"0": 0.9, "7": 0.5},
+					"cohortSampleSize":       1287,
+					"novelProfile":           false,
+				},
 			},
 		})
 	}))
@@ -131,7 +133,10 @@ func TestAttestClient_AttestNoCohortFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"verdict": map[string]any{"verdict": "pass", "ueid": "dev-9"},
+			"verdict": map[string]any{
+				"verdict": "pass",
+				"device":  map[string]any{"ueid": "dev-9"},
+			},
 		})
 	}))
 	defer srv.Close()
