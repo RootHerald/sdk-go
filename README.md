@@ -2,11 +2,11 @@
 
 Server-side Go SDK for RootHerald device attestation. Two paths:
 
-- **Background-Check (server → server)** — `AttestClient`: your dumb client
+- **Background-Check (server → server)** via `AttestClient`: your dumb client
   collects an opaque evidence blob and hands it to *your* server, which appraises
   it with RootHerald using your `rh_sk_` secret key. The client never holds a
   key or talks to RootHerald.
-- **Badge tier (offline verify)** — `Client.Verify` + chi/gin middleware:
+- **Badge tier (offline verify)** via `Client.Verify` + chi/gin middleware:
   verify a RootHerald-issued EAT (JWT) against the issuer's JWKS, no network call
   once warm. Also verifies CAEP webhook Security Event Tokens.
 
@@ -14,7 +14,7 @@ Server-side Go SDK for RootHerald device attestation. Two paths:
 go get github.com/RootHerald/sdk-go
 ```
 
-## Quick start — Background-Check (server → server)
+## Quick start: Background-Check (server → server)
 
 ```go
 import rh "github.com/RootHerald/sdk-go"
@@ -50,12 +50,12 @@ if res.Verdict != rh.VerdictAllow {
 // res.Token (when ReturnToken) is a signed EAT, verifiable offline with Verify.
 ```
 
-`evidence` is `rootherald.Evidence` (a `json.RawMessage`) — passed through to
+`evidence` is `rootherald.Evidence` (a `json.RawMessage`), passed through to
 RootHerald verbatim. The raw `verdict` maps to the SDK enum as: `pass` →
 `VerdictAllow`, `fail` → `VerdictDeny`, `warn`/unknown → `VerdictReview`
 (fail-closed).
 
-## Quick start — Badge tier (offline verify)
+## Quick start: Badge tier (offline verify)
 
 ```go
 client := rh.NewClient("https://rootherald.io",
@@ -73,11 +73,11 @@ log.Printf("device %s allowed", claims.Subject)
 
 `Verify` checks the token offline against the issuer's JWKS and returns the
 verdict the token carries (same mapping as above; always check the returned
-`Verdict` — a structurally valid token can still carry a non-allow verdict).
+`Verdict`, since a structurally valid token can still carry a non-allow verdict).
 
 > **Note:** the legacy `Client.VerifyOnline` is deprecated. It targets a
 > self-hosted `{verdict, reason, risk_score}` service and does not exist on the
-> stock RootHerald deployment — use `AttestClient` for the server → server path
+> stock RootHerald deployment. Use `AttestClient` for the server → server path
 > and `Verify` for offline badge checks.
 
 ## chi middleware
