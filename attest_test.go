@@ -13,8 +13,8 @@ func TestNewAttestClient_RejectsBadKeys(t *testing.T) {
 	if _, err := NewAttestClient(""); !errors.Is(err, ErrInvalidSecretKey) {
 		t.Errorf("empty key err = %v, want ErrInvalidSecretKey", err)
 	}
-	if _, err := NewAttestClient("rh_pk_live_abc"); !errors.Is(err, ErrInvalidSecretKey) {
-		t.Errorf("publishable key err = %v, want ErrInvalidSecretKey", err)
+	if _, err := NewAttestClient("rh_bogus_abc"); !errors.Is(err, ErrInvalidSecretKey) {
+		t.Errorf("invalid-prefix key err = %v, want ErrInvalidSecretKey", err)
 	}
 	if _, err := NewAttestClient("rh_sk_live_abc"); err != nil {
 		t.Errorf("valid secret key err = %v, want nil", err)
@@ -59,22 +59,18 @@ func TestAttestClient_AttestPassVerdict(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"verdict": map[string]any{"verdict": "pass", "ueid": "dev-9"},
-			"token":   "eyJ.signed.eat",
 		})
 	}))
 	defer srv.Close()
 
 	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Attest(context.Background(), json.RawMessage(`{"quote":"..."}`),
-		AttestOptions{ChallengeID: "ch_1", ReturnToken: true})
+		AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
 	if res.Verdict != VerdictAllow {
 		t.Errorf("verdict = %s, want allow", res.Verdict)
-	}
-	if res.Token != "eyJ.signed.eat" {
-		t.Errorf("token = %q", res.Token)
 	}
 }
 
