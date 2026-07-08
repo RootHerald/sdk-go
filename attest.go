@@ -16,8 +16,8 @@ import (
 // when no base URL is supplied.
 const DefaultBaseURL = "https://api.rootherald.io"
 
-// secretKeyPrefix marks a RootHerald secret key. Publishable keys (rh_pk_) must
-// never be used server-side and are rejected by NewAttestClient.
+// secretKeyPrefix marks a RootHerald secret key, used server-side as a Bearer
+// token. Any key without this prefix is rejected by NewAttestClient.
 const secretKeyPrefix = "rh_sk_"
 
 // Background-Check sentinel errors. Use errors.Is to switch on them. They mirror
@@ -81,17 +81,12 @@ type AttestOptions struct {
 	// Policy is a caller-named policy: a tenant-owned policy id/name or a
 	// "rootherald:builtin:*" name. Unknown/foreign names fail closed (422).
 	Policy string
-	// ReturnToken opts in to a signed EAT (JWT) in the response, itself
-	// verifiable offline with Verifier/Client.Verify.
-	ReturnToken bool
 }
 
-// AttestResult is the verdict returned by Attest plus, when requested, the
-// signed EAT token. Verdict is mapped to the SDK enum from the raw
-// "pass"/"fail"/"warn" the server emits.
+// AttestResult is the verdict returned by Attest. Verdict is mapped to the SDK
+// enum from the raw "pass"/"fail"/"warn" the server emits.
 type AttestResult struct {
 	Verdict Verdict
-	Token   string // present only when AttestOptions.ReturnToken was true
 	// Device is the typed view of the server's verdict.device object, including
 	// the additive, advisory-only cohort fields. It is nil if the response
 	// carried no device object.
@@ -106,10 +101,6 @@ type AttestResult struct {
 // and hands it to the customer's own server; the server uses this client,
 // authenticated with its rh_sk_ secret key, to mint a nonce (CreateChallenge)
 // and submit the evidence for appraisal (Attest).
-//
-// This is ADDITIVE to the offline/badge-tier path: Client.Verify and the
-// chi/gin middleware are unchanged, and the optional token from
-// Attest(..., ReturnToken: true) is verifiable with them.
 //
 // Construct with NewAttestClient; instances are safe for concurrent use.
 type AttestClient struct {
@@ -127,22 +118,19 @@ func WithBaseURL(baseURL string) AttestClientOption {
 }
 
 // WithAttestHTTPClient swaps the underlying *http.Client (timeouts, proxies,
-// tests). Named distinctly from the Verifier's WithHTTPClient (and mirroring
-// client.go's WithClientHTTPClient) because Go package-level identifiers share
-// one namespace.
+// tests).
 func WithAttestHTTPClient(h *http.Client) AttestClientOption {
 	return func(c *AttestClient) { c.http = h }
 }
 
 // NewAttestClient builds a Background-Check client. secretKey is required and
-// must be a secret key (rh_sk_…); a publishable key (rh_pk_…) is rejected
-// because it must never be used server-side.
+// must start with rh_sk_; any other value is rejected.
 func NewAttestClient(secretKey string, opts ...AttestClientOption) (*AttestClient, error) {
 	if secretKey == "" {
 		return nil, fmt.Errorf("%w: a secret key (rh_sk_…) is required", ErrInvalidSecretKey)
 	}
 	if !strings.HasPrefix(secretKey, secretKeyPrefix) {
-		return nil, fmt.Errorf("%w: must be a secret key (rh_sk_…); a publishable key (rh_pk_…) must never be used server-side", ErrInvalidSecretKey)
+		return nil, fmt.Errorf("%w: RootHerald secret key must start with rh_sk_", ErrInvalidSecretKey)
 	}
 	c := &AttestClient{
 		secretKey: secretKey,
@@ -185,14 +173,12 @@ func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (
 // verifyResponseBody is the wire shape of the verify endpoint.
 type verifyResponseBody struct {
 	Verdict map[string]any `json:"verdict"`
-	Token   string         `json:"token,omitempty"`
 }
 
 // Verify submits the opaque evidence blob for server-side appraisal via
-// POST {baseURL}/api/v1/attestations/verify and returns the verdict (plus an
-// optional signed EAT when opts.ReturnToken is true). The verdict is computed by
-// RootHerald and returned here, to the customer's backend — it never travels
-// through the client, which holds no key and gets no verdict.
+// POST {baseURL}/api/v1/attestations/verify and returns the verdict. The verdict
+// is computed by RootHerald and returned here, to the customer's backend — it
+// never travels through the client, which holds no key and gets no verdict.
 //
 // An un-enrolled / failing device is NOT an error — it returns a normal verdict
 // carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems return
@@ -209,9 +195,6 @@ func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts Attes
 	if opts.Policy != "" {
 		body["policy"] = opts.Policy
 	}
-	if opts.ReturnToken {
-		body["returnToken"] = true
-	}
 
 	var resp verifyResponseBody
 	if err := c.post(ctx, "/api/v1/attestations/verify", body, &resp); err != nil {
@@ -223,7 +206,6 @@ func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts Attes
 	raw, _ := resp.Verdict["verdict"].(string)
 	return AttestResult{
 		Verdict: mapVerdict(raw),
-		Token:   resp.Token,
 		Device:  parseDeviceVerdict(resp.Verdict["device"]),
 		Raw:     resp.Verdict,
 	}, nil
