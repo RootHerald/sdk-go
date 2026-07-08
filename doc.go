@@ -1,5 +1,5 @@
-// Package rootherald is the server-side SDK for verifying RootHerald attestation tokens
-// and CAEP webhook Security Event Tokens.
+// Package rootherald is the server-side SDK for the RootHerald server -> server
+// Background-Check flow.
 //
 // RootHerald uses a server -> server Background-Check model: the customer's dumb
 // client collects an opaque evidence blob (TPM quote, Secure Enclave
@@ -30,18 +30,4 @@
 //	    act, _ := rh.RelayActivate(ctx, activationResponse) // POST /api/v1/devices/activate
 //	    _ = act.DeviceID
 //	}
-//
-// Offline badge-tier verification of a RootHerald-issued EAT (e.g. the optional
-// token from Attest with ReturnToken) uses the Verifier / Client.Verify path:
-//
-//	client := rootherald.NewClient("https://rootherald.io",
-//	    rootherald.WithIssuer("rootherald.io/myorg"),
-//	    rootherald.WithAudience("my-app"),
-//	)
-//	verdict, claims, err := client.Verify(ctx, token)
-//	if err != nil || verdict != rootherald.VerdictAllow {
-//	    http.Error(w, "attestation rejected", http.StatusUnauthorized)
-//	    return
-//	}
-//	log.Printf("device %s allowed", claims.Subject)
 package rootherald

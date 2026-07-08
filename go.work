@@ -2,7 +2,5 @@ go 1.22
 
 use (
     .
-    ./chi
-    ./gin
     ./examples/hello
 )
