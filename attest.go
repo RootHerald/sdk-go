@@ -14,7 +14,7 @@ import (
 
 // DefaultBaseURL is the production RootHerald API base URL used by AttestClient
 // when no base URL is supplied.
-const DefaultBaseURL = "https://api.rootherald.io"
+const DefaultBaseURL = "https://rootherald.io"
 
 // secretKeyPrefix marks a RootHerald secret key, used server-side as a Bearer
 // token. Any key without this prefix is rejected by NewAttestClient.
@@ -81,6 +81,10 @@ type AttestOptions struct {
 	// Policy is a caller-named policy: a tenant-owned policy id/name or a
 	// "rootherald:builtin:*" name. Unknown/foreign names fail closed (422).
 	Policy string
+	// RequestedDisclosureClass optionally requests how much device detail the
+	// verdict should disclose: "verdict" | "pseudonymous" | "derived" | "full".
+	// Empty omits the request and lets the server apply its default.
+	RequestedDisclosureClass string
 }
 
 // AttestResult is the verdict returned by Attest. Verdict is mapped to the SDK
@@ -91,6 +95,13 @@ type AttestResult struct {
 	// the additive, advisory-only cohort fields. It is nil if the response
 	// carried no device object.
 	Device *DeviceVerdict
+	// AssuranceClaimsMet lists the assurance claim URNs the device satisfied
+	// (top-level "assuranceClaimsMet"), mirroring @rootherald/node.
+	AssuranceClaimsMet []string
+	// EnrollmentRequired is the top-level "enrollmentRequired" attest-first /
+	// enroll-on-miss signal: true when the device must enroll before a verdict
+	// can be issued.
+	EnrollmentRequired bool
 	// Raw is the full decoded verdict object as returned by the server, for
 	// callers that need fields the typed surface does not expose yet.
 	Raw map[string]any
@@ -170,9 +181,13 @@ func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (
 	return c.IssueChallenge(ctx, deviceHint)
 }
 
-// verifyResponseBody is the wire shape of the verify endpoint.
+// verifyResponseBody is the wire shape of the verify endpoint. The pass/fail
+// token lives at verdict.device.verdict; assuranceClaimsMet and
+// enrollmentRequired are top-level siblings of verdict.
 type verifyResponseBody struct {
-	Verdict map[string]any `json:"verdict"`
+	Verdict            map[string]any `json:"verdict"`
+	AssuranceClaimsMet []string       `json:"assuranceClaimsMet"`
+	EnrollmentRequired bool           `json:"enrollmentRequired"`
 }
 
 // Verify submits the opaque evidence blob for server-side appraisal via
@@ -195,6 +210,9 @@ func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts Attes
 	if opts.Policy != "" {
 		body["policy"] = opts.Policy
 	}
+	if opts.RequestedDisclosureClass != "" {
+		body["requestedDisclosureClass"] = opts.RequestedDisclosureClass
+	}
 
 	var resp verifyResponseBody
 	if err := c.post(ctx, "/api/v1/attestations/verify", body, &resp); err != nil {
@@ -203,11 +221,20 @@ func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts Attes
 	if resp.Verdict == nil {
 		return AttestResult{}, fmt.Errorf("%w: verify response missing verdict", ErrAttestHTTP)
 	}
-	raw, _ := resp.Verdict["verdict"].(string)
+	// The pass/fail token lives at verdict.device.verdict, not top-level
+	// verdict.verdict; read it from the parsed device so a passing device is not
+	// silently downgraded to review/deny.
+	device := parseDeviceVerdict(resp.Verdict["device"])
+	var rawVerdict string
+	if device != nil {
+		rawVerdict = device.Verdict
+	}
 	return AttestResult{
-		Verdict: mapVerdict(raw),
-		Device:  parseDeviceVerdict(resp.Verdict["device"]),
-		Raw:     resp.Verdict,
+		Verdict:            mapVerdict(rawVerdict),
+		Device:             device,
+		AssuranceClaimsMet: resp.AssuranceClaimsMet,
+		EnrollmentRequired: resp.EnrollmentRequired,
+		Raw:                resp.Verdict,
 	}, nil
 }
 

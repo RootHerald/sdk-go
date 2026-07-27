@@ -50,27 +50,85 @@ func TestAttestClient_CreateChallenge(t *testing.T) {
 }
 
 func TestAttestClient_AttestPassVerdict(t *testing.T) {
+	var gotDisclosure any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body["challengeId"] != "ch_1" {
 			t.Errorf("challengeId = %v", body["challengeId"])
 		}
+		gotDisclosure = body["requestedDisclosureClass"]
 		w.Header().Set("Content-Type", "application/json")
+		// Real wire shape: the pass/fail token lives at verdict.device.verdict,
+		// with assuranceClaimsMet + enrollmentRequired as top-level siblings.
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"verdict": map[string]any{"verdict": "pass", "ueid": "dev-9"},
+			"verdict": map[string]any{
+				"acr": "urn:rootherald:acr:device",
+				"device": map[string]any{
+					"verdict":         "pass",
+					"ueid":            "dev-9",
+					"earStatus":       "affirming",
+					"attestationType": "tpm20",
+					"quoteVerified":   true,
+				},
+			},
+			"assuranceClaimsMet": []string{"urn:rootherald:assurance:hardware-backed"},
+			"enrollmentRequired": false,
 		})
 	}))
 	defer srv.Close()
 
 	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Attest(context.Background(), json.RawMessage(`{"quote":"..."}`),
-		AttestOptions{ChallengeID: "ch_1"})
+		AttestOptions{ChallengeID: "ch_1", RequestedDisclosureClass: "pseudonymous"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
 	if res.Verdict != VerdictAllow {
 		t.Errorf("verdict = %s, want allow", res.Verdict)
+	}
+	if res.Device == nil || res.Device.EARStatus != "affirming" || res.Device.AttestationType != "tpm20" {
+		t.Errorf("device = %+v, want earStatus=affirming attestationType=tpm20", res.Device)
+	}
+	if len(res.AssuranceClaimsMet) != 1 || res.AssuranceClaimsMet[0] != "urn:rootherald:assurance:hardware-backed" {
+		t.Errorf("assuranceClaimsMet = %v", res.AssuranceClaimsMet)
+	}
+	if res.EnrollmentRequired {
+		t.Errorf("enrollmentRequired = true, want false")
+	}
+	if gotDisclosure != "pseudonymous" {
+		t.Errorf("requestedDisclosureClass sent = %v, want pseudonymous", gotDisclosure)
+	}
+}
+
+// enrollmentRequired surfaces the attest-first / enroll-on-miss signal, and an
+// omitted RequestedDisclosureClass leaves the request key out.
+func TestAttestClient_AttestEnrollmentRequired(t *testing.T) {
+	var sawDisclosureKey bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, sawDisclosureKey = body["requestedDisclosureClass"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict":            map[string]any{"device": map[string]any{"verdict": "fail"}},
+			"assuranceClaimsMet": []string{},
+			"enrollmentRequired": true,
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+		AttestOptions{ChallengeID: "ch_1"})
+	if err != nil {
+		t.Fatalf("Attest: %v", err)
+	}
+	if !res.EnrollmentRequired {
+		t.Errorf("enrollmentRequired = false, want true")
+	}
+	if sawDisclosureKey {
+		t.Errorf("requestedDisclosureClass sent though not supplied")
 	}
 }
 
@@ -80,8 +138,8 @@ func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"verdict": map[string]any{
-				"verdict": "pass",
 				"device": map[string]any{
+					"verdict":                "pass",
 					"ueid":                   "dev-9",
 					"cohortKey":              "tpm20:win11:sb1:abc123",
 					"cohortScope":            "tenant-fleet",
@@ -130,8 +188,7 @@ func TestAttestClient_AttestNoCohortFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"verdict": map[string]any{
-				"verdict": "pass",
-				"device":  map[string]any{"ueid": "dev-9"},
+				"device": map[string]any{"verdict": "pass", "ueid": "dev-9"},
 			},
 		})
 	}))
@@ -157,7 +214,7 @@ func TestAttestClient_AttestFailVerdictNotError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"verdict": map[string]any{"verdict": "fail"},
+			"verdict": map[string]any{"device": map[string]any{"verdict": "fail"}},
 		})
 	}))
 	defer srv.Close()
