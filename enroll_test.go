@@ -263,7 +263,7 @@ func TestVerify_AliasParity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"verdict": map[string]any{"verdict": "pass"},
+			"verdict": map[string]any{"device": map[string]any{"verdict": "pass"}},
 		})
 	}))
 	defer srv.Close()
