@@ -39,9 +39,9 @@ type DeviceVerdict struct {
 }
 
 // mapVerdict translates the platform's raw verdict vocabulary
-// ("pass"/"fail"/"warn", as emitted by the attestation token's flat "verdict"
-// claim) into the SDK Verdict enum. Unknown or empty values map to
-// VerdictReview so an unrecognised token is never silently allowed.
+// ("pass"/"fail"/"warn", as emitted by the verdict.device.verdict token) into
+// the SDK Verdict enum. Unknown or empty values map to VerdictReview so an
+// unrecognised token is never silently allowed.
 func mapVerdict(raw string) Verdict {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "pass", "allow", "affirming":
