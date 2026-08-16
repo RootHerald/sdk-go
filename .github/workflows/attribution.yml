@@ -1,0 +1,28 @@
+name: Attribution
+
+# Commits are authored by Root Herald. An agent is a tool used to produce them,
+# not a contributor to credit in the history. Policy lives in the platform
+# repo's CLAUDE.md; this gate enforces it rather than trusting it is read.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  no-agent-attribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject agent attribution trailers
+        run: |
+          range="origin/${{ github.base_ref }}..HEAD"
+          if git log --format='%B' "$range" \
+             | grep -inE '^co-authored-by:[[:space:]]*(claude|copilot|cursor|devin|assistant)|^🤖 generated with|^generated with \[claude'; then
+            echo "::error::Agent attribution trailer found in a commit message."
+            echo "Rewrite the offending commits (git rebase -i / git commit --amend) and force-push."
+            exit 1
+          fi
+          echo "No agent attribution found in $range"
