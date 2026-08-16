@@ -16,13 +16,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Reject agent attribution trailers
         run: |
           range="origin/${{ github.base_ref }}..HEAD"
+
+          # Patterns are deliberately loose. An earlier version anchored with ^
+          # and only listed a few tools, so a trailer indented by one space, or
+          # a plain "Generated with Claude Code" without the emoji, sailed
+          # straight through the gate it was supposed to trip.
+          #
+          #   [[:space:]]*  — leading whitespace does not bypass
+          #   co-authored-by:.*(agent list)  — anywhere on the line
+          #   generated with .*(agent list)  — with or without emoji/markdown
+          agents='claude|copilot|chatgpt|gpt-4|codex|cursor|devin|windsurf|aider|gemini|assistant|anthropic|openai'
+
           if git log --format='%B' "$range" \
-             | grep -inE '^co-authored-by:[[:space:]]*(claude|copilot|cursor|devin|assistant)|^🤖 generated with|^generated with \[claude'; then
-            echo "::error::Agent attribution trailer found in a commit message."
-            echo "Rewrite the offending commits (git rebase -i / git commit --amend) and force-push."
+             | grep -inE "^[[:space:]]*co-authored-by:.*($agents)|generated with.*($agents)|🤖"; then
+            echo "::error::Agent attribution found in a commit message — see CLAUDE.md."
+            echo "Rewrite the offending commits and force-push:"
+            echo "  git rebase -i origin/${{ github.base_ref }}   # reword, drop the trailer"
             exit 1
           fi
-          echo "No agent attribution found in $range"
+
+          # Retired brand: CLAUDE.md treats this string as a hard failure
+          # anywhere in any repo, and it survived in commit messages across all
+          # nine repos until 2026-08-16 because nothing checked for it.
+          if git log --format='%B' "$range" | grep -inE 'platattest'; then
+            echo "::error::Retired 'Platattest' brand found in a commit message — see CLAUDE.md."
+            exit 1
+          fi
+
+          echo "No agent attribution or retired branding in $range"
