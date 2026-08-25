@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -34,6 +36,7 @@ const secretKeyPrefix = "rh_sk_"
 // surface as one of these errors.
 var (
 	ErrInvalidSecretKey = errors.New("rootherald: invalid secret key")
+	ErrInvalidBaseURL   = errors.New("rootherald: invalid base URL")
 	ErrUnknownPolicy    = errors.New("rootherald: unknown policy")
 	ErrChallenge        = errors.New("rootherald: challenge invalid or expired")
 	ErrInvalidEvidence  = errors.New("rootherald: invalid evidence")
@@ -151,7 +154,44 @@ func NewAttestClient(secretKey string, opts ...AttestClientOption) (*AttestClien
 	for _, o := range opts {
 		o(c)
 	}
+	if err := requireSecureBaseURL(c.baseURL); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// requireSecureBaseURL rejects a base URL that would put the rh_sk_ secret on the
+// wire in the clear.
+//
+// Every request carries the secret in an Authorization header, and the secret is
+// full-privilege, so a base URL that is http:// or is missing its scheme entirely
+// leaks it to anyone on the path. A typo is enough; nothing else in the SDK would
+// notice, because the request itself succeeds.
+//
+// Loopback is exempt so the local docker stack still works over http.
+func requireSecureBaseURL(baseURL string) error {
+	u, err := url.Parse(baseURL)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return fmt.Errorf("%w: base URL must be an absolute https URL (got %q)",
+			ErrInvalidBaseURL, baseURL)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("%w: base URL must use https (got %q)", ErrInvalidBaseURL, baseURL)
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // IssueChallenge mints a relay-friendly nonce via

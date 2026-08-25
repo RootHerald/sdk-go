@@ -260,3 +260,38 @@ func TestAttestClient_ErrorMapping(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// The secret travels in an Authorization header on every request, so a base URL
+// that is not https puts a full-privilege credential on the wire in the clear. A
+// typo is enough, and nothing downstream would notice, because the request still
+// succeeds.
+func TestNewAttestClient_RejectsInsecureBaseURL(t *testing.T) {
+	for _, bad := range []string{
+		"http://rootherald.io",
+		"http://api.internal.example",
+		"rootherald.io",
+		"//rootherald.io",
+		"",
+	} {
+		if _, err := NewAttestClient("rh_sk_test", WithBaseURL(bad)); err == nil {
+			t.Errorf("base URL %q was accepted; it puts the secret key in cleartext", bad)
+		} else if !errors.Is(err, ErrInvalidBaseURL) {
+			t.Errorf("base URL %q: got %v, want ErrInvalidBaseURL", bad, err)
+		}
+	}
+}
+
+// Loopback is exempt so the local docker stack still works over http.
+func TestNewAttestClient_AllowsHttpsAndLoopback(t *testing.T) {
+	for _, ok := range []string{
+		"https://rootherald.io",
+		"https://preprod.rootherald.io",
+		"http://localhost:8080",
+		"http://127.0.0.1:5000",
+		"http://[::1]:5000",
+	} {
+		if _, err := NewAttestClient("rh_sk_test", WithBaseURL(ok)); err != nil {
+			t.Errorf("base URL %q was rejected: %v", ok, err)
+		}
+	}
+}
