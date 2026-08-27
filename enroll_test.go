@@ -38,7 +38,7 @@ func TestRelayEnroll_FreshEnroll201(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 	if err != nil {
 		t.Fatalf("RelayEnroll: %v", err)
@@ -78,7 +78,7 @@ func TestRelayEnroll_AlreadyEnrolled409(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 	if err != nil {
 		t.Fatalf("RelayEnroll 409 returned error: %v (409 already-enrolled is not an error)", err)
@@ -102,7 +102,7 @@ func TestRelayEnroll_409MissingDeviceID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	_, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 	if err == nil {
 		t.Fatal("expected error for 409 with no deviceId")
@@ -114,7 +114,7 @@ func TestRelayEnroll_409MissingDeviceID(t *testing.T) {
 }
 
 func TestRelayEnroll_ValidatesBlob(t *testing.T) {
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
 	cases := []struct {
 		name string
 		blob EnrollRequestBlob
@@ -148,7 +148,7 @@ func TestRelayEnroll_ErrorMapping(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "x", "message": "boom"})
 		}))
-		c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 		_, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 		if !errors.Is(err, tc.sentinel) {
 			t.Errorf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
@@ -174,7 +174,7 @@ func TestRelayActivate_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.RelayActivate(context.Background(), EnrollActivationResponse{
 		DeviceID:        "dev-1",
 		DecryptedSecret: "c2VjcmV0",
@@ -198,7 +198,7 @@ func TestRelayActivate_Success(t *testing.T) {
 }
 
 func TestRelayActivate_ValidatesInput(t *testing.T) {
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
 	cases := []struct {
 		name string
 		in   EnrollActivationResponse
@@ -225,7 +225,7 @@ func TestRelayActivate_ErrorMapping(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	_, err := c.RelayActivate(context.Background(), EnrollActivationResponse{
 		DeviceID: "dev-1", DecryptedSecret: "s",
 	})
@@ -234,29 +234,6 @@ func TestRelayActivate_ErrorMapping(t *testing.T) {
 	}
 }
 
-// IssueChallenge is the renamed primary; CreateChallenge stays as a thin alias.
-func TestIssueChallenge_AliasParity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"challengeId": "ch_1", "nonce": "n_1", "expiresAt": "2030-01-01T00:00:00Z",
-		})
-	}))
-	defer srv.Close()
-
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	a, err := c.IssueChallenge(context.Background(), "")
-	if err != nil {
-		t.Fatalf("IssueChallenge: %v", err)
-	}
-	b, err := c.CreateChallenge(context.Background(), "")
-	if err != nil {
-		t.Fatalf("CreateChallenge alias: %v", err)
-	}
-	if a.ChallengeID != b.ChallengeID || a.ChallengeID != "ch_1" {
-		t.Errorf("IssueChallenge=%+v CreateChallenge=%+v", a, b)
-	}
-}
 
 // Verify is the renamed primary; Attest stays as a thin alias.
 func TestVerify_AliasParity(t *testing.T) {
@@ -268,12 +245,12 @@ func TestVerify_AliasParity(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	v, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	a, err := c.Attest(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
+	a, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest alias: %v", err)
 	}

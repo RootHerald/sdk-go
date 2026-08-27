@@ -127,7 +127,7 @@ type RelayActivateResponse struct {
 //
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
 // backend helper is the only thing that does.
-func (c *AttestClient) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (RelayEnrollResult, error) {
+func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (RelayEnrollResult, error) {
 	if blob.EkPublicKey == "" || blob.AkPublicArea == "" {
 		return RelayEnrollResult{}, fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea", ErrInvalidEnrollBlob)
 	}
@@ -176,7 +176,7 @@ func (c *AttestClient) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) 
 //
 // It returns the terminal {DeviceID, Status, EnrolledAt} body; DeviceID is the
 // load-bearing field the backend maps to its user.
-func (c *AttestClient) RelayActivate(ctx context.Context, activation EnrollActivationResponse) (RelayActivateResponse, error) {
+func (c *Client) RelayActivate(ctx context.Context, activation EnrollActivationResponse) (RelayActivateResponse, error) {
 	if activation.DeviceID == "" || activation.DecryptedSecret == "" {
 		return RelayActivateResponse{}, fmt.Errorf("%w: RelayActivate requires DeviceID and DecryptedSecret", ErrInvalidActivation)
 	}

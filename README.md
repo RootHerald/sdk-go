@@ -2,7 +2,7 @@
 
 Server-side Go SDK for RootHerald device attestation.
 
-**Background-Check (server → server)** via `AttestClient`: your dumb client
+**Background-Check (server → server)** via `Client`: your dumb client
 collects an opaque evidence blob and hands it to *your* server, which appraises
 it with RootHerald using your `rh_sk_` secret key. The client never holds a key
 or talks to RootHerald.
@@ -18,7 +18,7 @@ import rh "github.com/RootHerald/sdk-go"
 
 // Construct once with your SECRET key (rh_sk_…). Any key without the rh_sk_
 // prefix is rejected.
-client, err := rh.NewAttestClient(os.Getenv("ROOTHERALD_SECRET_KEY"))
+client, err := rh.NewClient(os.Getenv("ROOTHERALD_SECRET_KEY"))
 if err != nil {
     log.Fatal(err)
 }
@@ -44,9 +44,6 @@ if res.Verdict != rh.VerdictAllow {
     return
 }
 ```
-
-> `IssueChallenge` / `Verify` are the ABI 2.0 names; `CreateChallenge` / `Attest`
-> remain as deprecated aliases.
 
 `evidence` is `rootherald.Evidence` (a `json.RawMessage`), passed through to
 RootHerald verbatim. The raw `verdict` maps to the SDK enum as: `pass` →
