@@ -22,10 +22,10 @@ func main() {
 
 	// Background-Check client (server -> server). Optional: only wired if a
 	// secret key is configured.
-	var attest *rh.AttestClient
+	var attest *rh.Client
 	if secretKey != "" {
 		var err error
-		if attest, err = rh.NewAttestClient(secretKey); err != nil {
+		if attest, err = rh.NewClient(secretKey); err != nil {
 			log.Fatalf("attest client: %v", err)
 		}
 	}

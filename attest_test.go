@@ -9,19 +9,19 @@ import (
 	"testing"
 )
 
-func TestNewAttestClient_RejectsBadKeys(t *testing.T) {
-	if _, err := NewAttestClient(""); !errors.Is(err, ErrInvalidSecretKey) {
+func TestNewClient_RejectsBadKeys(t *testing.T) {
+	if _, err := NewClient(""); !errors.Is(err, ErrInvalidSecretKey) {
 		t.Errorf("empty key err = %v, want ErrInvalidSecretKey", err)
 	}
-	if _, err := NewAttestClient("rh_bogus_abc"); !errors.Is(err, ErrInvalidSecretKey) {
+	if _, err := NewClient("rh_bogus_abc"); !errors.Is(err, ErrInvalidSecretKey) {
 		t.Errorf("invalid-prefix key err = %v, want ErrInvalidSecretKey", err)
 	}
-	if _, err := NewAttestClient("rh_sk_live_abc"); err != nil {
+	if _, err := NewClient("rh_sk_live_abc"); err != nil {
 		t.Errorf("valid secret key err = %v, want nil", err)
 	}
 }
 
-func TestAttestClient_CreateChallenge(t *testing.T) {
+func TestClient_IssueChallenge(t *testing.T) {
 	var gotAuth, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -33,10 +33,10 @@ func TestAttestClient_CreateChallenge(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	chal, err := c.CreateChallenge(context.Background(), "device-hint")
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	chal, err := c.IssueChallenge(context.Background(), "device-hint")
 	if err != nil {
-		t.Fatalf("CreateChallenge: %v", err)
+		t.Fatalf("IssueChallenge: %v", err)
 	}
 	if chal.ChallengeID != "ch_1" || chal.Nonce != "n_1" {
 		t.Errorf("challenge = %+v", chal)
@@ -49,7 +49,7 @@ func TestAttestClient_CreateChallenge(t *testing.T) {
 	}
 }
 
-func TestAttestClient_AttestPassVerdict(t *testing.T) {
+func TestClient_AttestPassVerdict(t *testing.T) {
 	var gotDisclosure any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -78,8 +78,8 @@ func TestAttestClient_AttestPassVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Attest(context.Background(), json.RawMessage(`{"quote":"..."}`),
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Verify(context.Background(), json.RawMessage(`{"quote":"..."}`),
 		AttestOptions{ChallengeID: "ch_1", RequestedDisclosureClass: "pseudonymous"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
@@ -103,7 +103,7 @@ func TestAttestClient_AttestPassVerdict(t *testing.T) {
 
 // enrollmentRequired surfaces the attest-first / enroll-on-miss signal, and an
 // omitted RequestedDisclosureClass leaves the request key out.
-func TestAttestClient_AttestEnrollmentRequired(t *testing.T) {
+func TestClient_AttestEnrollmentRequired(t *testing.T) {
 	var sawDisclosureKey bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -118,8 +118,8 @@ func TestAttestClient_AttestEnrollmentRequired(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
 		AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
@@ -133,7 +133,7 @@ func TestAttestClient_AttestEnrollmentRequired(t *testing.T) {
 }
 
 // Cohort fields on verdict.device parse into the typed Device view.
-func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
+func TestClient_AttestParsesCohortFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -153,8 +153,8 @@ func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
 		AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
@@ -183,7 +183,7 @@ func TestAttestClient_AttestParsesCohortFields(t *testing.T) {
 }
 
 // Cohort fields stay nil when the server omits them.
-func TestAttestClient_AttestNoCohortFields(t *testing.T) {
+func TestClient_AttestNoCohortFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -194,8 +194,8 @@ func TestAttestClient_AttestNoCohortFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
 		AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
@@ -210,7 +210,7 @@ func TestAttestClient_AttestNoCohortFields(t *testing.T) {
 }
 
 // An un-enrolled / failing device is a verdict, not an error.
-func TestAttestClient_AttestFailVerdictNotError(t *testing.T) {
+func TestClient_AttestFailVerdictNotError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -219,8 +219,8 @@ func TestAttestClient_AttestFailVerdictNotError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
 		AttestOptions{ChallengeID: "ch_1"})
 	if err != nil {
 		t.Fatalf("Attest returned error for fail verdict: %v", err)
@@ -230,7 +230,7 @@ func TestAttestClient_AttestFailVerdictNotError(t *testing.T) {
 	}
 }
 
-func TestAttestClient_ErrorMapping(t *testing.T) {
+func TestClient_ErrorMapping(t *testing.T) {
 	cases := []struct {
 		status   int
 		sentinel error
@@ -247,8 +247,8 @@ func TestAttestClient_ErrorMapping(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "x", "message": "boom"})
 		}))
-		c, _ := NewAttestClient("rh_sk_test_key", WithBaseURL(srv.URL))
-		_, err := c.Attest(context.Background(), json.RawMessage(`{}`),
+		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+		_, err := c.Verify(context.Background(), json.RawMessage(`{}`),
 			AttestOptions{ChallengeID: "ch_1"})
 		if !errors.Is(err, tc.sentinel) {
 			t.Errorf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
@@ -265,7 +265,7 @@ func TestAttestClient_ErrorMapping(t *testing.T) {
 // that is not https puts a full-privilege credential on the wire in the clear. A
 // typo is enough, and nothing downstream would notice, because the request still
 // succeeds.
-func TestNewAttestClient_RejectsInsecureBaseURL(t *testing.T) {
+func TestNewClient_RejectsInsecureBaseURL(t *testing.T) {
 	for _, bad := range []string{
 		"http://rootherald.io",
 		"http://api.internal.example",
@@ -273,7 +273,7 @@ func TestNewAttestClient_RejectsInsecureBaseURL(t *testing.T) {
 		"//rootherald.io",
 		"",
 	} {
-		if _, err := NewAttestClient("rh_sk_test", WithBaseURL(bad)); err == nil {
+		if _, err := NewClient("rh_sk_test", WithBaseURL(bad)); err == nil {
 			t.Errorf("base URL %q was accepted; it puts the secret key in cleartext", bad)
 		} else if !errors.Is(err, ErrInvalidBaseURL) {
 			t.Errorf("base URL %q: got %v, want ErrInvalidBaseURL", bad, err)
@@ -282,7 +282,7 @@ func TestNewAttestClient_RejectsInsecureBaseURL(t *testing.T) {
 }
 
 // Loopback is exempt so the local docker stack still works over http.
-func TestNewAttestClient_AllowsHttpsAndLoopback(t *testing.T) {
+func TestNewClient_AllowsHttpsAndLoopback(t *testing.T) {
 	for _, ok := range []string{
 		"https://rootherald.io",
 		"https://preprod.rootherald.io",
@@ -290,7 +290,7 @@ func TestNewAttestClient_AllowsHttpsAndLoopback(t *testing.T) {
 		"http://127.0.0.1:5000",
 		"http://[::1]:5000",
 	} {
-		if _, err := NewAttestClient("rh_sk_test", WithBaseURL(ok)); err != nil {
+		if _, err := NewClient("rh_sk_test", WithBaseURL(ok)); err != nil {
 			t.Errorf("base URL %q was rejected: %v", ok, err)
 		}
 	}

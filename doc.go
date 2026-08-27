@@ -9,7 +9,7 @@
 //
 // Background-Check (server -> server) quick start:
 //
-//	rh, _ := rootherald.NewAttestClient(os.Getenv("ROOTHERALD_SECRET_KEY"))
+//	rh, _ := rootherald.NewClient(os.Getenv("ROOTHERALD_SECRET_KEY"))
 //	chal, _ := rh.IssueChallenge(ctx, "" /* optional deviceHint */)
 //	// relay chal.Nonce to the client; it quotes over it and returns `evidence`
 //	res, err := rh.Verify(ctx, evidence, rootherald.AttestOptions{ChallengeID: chal.ChallengeID})

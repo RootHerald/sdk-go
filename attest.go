@@ -14,12 +14,12 @@ import (
 	"time"
 )
 
-// DefaultBaseURL is the production RootHerald API base URL used by AttestClient
+// DefaultBaseURL is the production RootHerald API base URL used by Client
 // when no base URL is supplied.
 const DefaultBaseURL = "https://rootherald.io"
 
 // secretKeyPrefix marks a RootHerald secret key, used server-side as a Bearer
-// token. Any key without this prefix is rejected by NewAttestClient.
+// token. Any key without this prefix is rejected by NewClient.
 const secretKeyPrefix = "rh_sk_"
 
 // Background-Check sentinel errors. Use errors.Is to switch on them. They mirror
@@ -64,7 +64,7 @@ func (e *APIError) Error() string {
 // Unwrap returns the matching sentinel so errors.Is works.
 func (e *APIError) Unwrap() error { return e.sentinel }
 
-// Challenge is the relay-friendly nonce minted by CreateChallenge. Relay Nonce
+// Challenge is the relay-friendly nonce minted by IssueChallenge. Relay Nonce
 // to the dumb client; the client quotes over it and returns an opaque evidence
 // blob, which the server submits with Attest using ChallengeID.
 type Challenge struct {
@@ -79,7 +79,7 @@ type Evidence = json.RawMessage
 
 // AttestOptions configures a single Attest call.
 type AttestOptions struct {
-	// ChallengeID is the single-use challenge id from CreateChallenge. Required.
+	// ChallengeID is the single-use challenge id from IssueChallenge. Required.
 	ChallengeID string
 	// Policy is a caller-named policy: a tenant-owned policy id/name or a
 	// "rootherald:builtin:*" name. Unknown/foreign names fail closed (422).
@@ -110,43 +110,43 @@ type AttestResult struct {
 	Raw map[string]any
 }
 
-// AttestClient is the server -> server Background-Check client. The customer's
+// Client is the server -> server Background-Check client. The customer's
 // dumb client collects an opaque evidence blob (no keys, no RootHerald contact)
 // and hands it to the customer's own server; the server uses this client,
-// authenticated with its rh_sk_ secret key, to mint a nonce (CreateChallenge)
+// authenticated with its rh_sk_ secret key, to mint a nonce (IssueChallenge)
 // and submit the evidence for appraisal (Attest).
 //
-// Construct with NewAttestClient; instances are safe for concurrent use.
-type AttestClient struct {
+// Construct with NewClient; instances are safe for concurrent use.
+type Client struct {
 	secretKey string
 	baseURL   string
 	http      *http.Client
 }
 
-// AttestClientOption customises an AttestClient.
-type AttestClientOption func(*AttestClient)
+// ClientOption customises an Client.
+type ClientOption func(*Client)
 
 // WithBaseURL overrides the default production base URL.
-func WithBaseURL(baseURL string) AttestClientOption {
-	return func(c *AttestClient) { c.baseURL = strings.TrimRight(baseURL, "/") }
+func WithBaseURL(baseURL string) ClientOption {
+	return func(c *Client) { c.baseURL = strings.TrimRight(baseURL, "/") }
 }
 
-// WithAttestHTTPClient swaps the underlying *http.Client (timeouts, proxies,
+// WithHTTPClient swaps the underlying *http.Client (timeouts, proxies,
 // tests).
-func WithAttestHTTPClient(h *http.Client) AttestClientOption {
-	return func(c *AttestClient) { c.http = h }
+func WithHTTPClient(h *http.Client) ClientOption {
+	return func(c *Client) { c.http = h }
 }
 
-// NewAttestClient builds a Background-Check client. secretKey is required and
+// NewClient builds a Background-Check client. secretKey is required and
 // must start with rh_sk_; any other value is rejected.
-func NewAttestClient(secretKey string, opts ...AttestClientOption) (*AttestClient, error) {
+func NewClient(secretKey string, opts ...ClientOption) (*Client, error) {
 	if secretKey == "" {
 		return nil, fmt.Errorf("%w: a secret key (rh_sk_…) is required", ErrInvalidSecretKey)
 	}
 	if !strings.HasPrefix(secretKey, secretKeyPrefix) {
 		return nil, fmt.Errorf("%w: RootHerald secret key must start with rh_sk_", ErrInvalidSecretKey)
 	}
-	c := &AttestClient{
+	c := &Client{
 		secretKey: secretKey,
 		baseURL:   DefaultBaseURL,
 		http:      &http.Client{Timeout: 10 * time.Second},
@@ -198,7 +198,7 @@ func isLoopbackHost(host string) bool {
 // POST {baseURL}/api/v1/attestations/challenge. deviceHint is optional and may
 // be "" to omit it. Relay the returned Nonce to the client; the client quotes
 // over it, then submit the resulting evidence with Verify using ChallengeID.
-func (c *AttestClient) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
+func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
 	body := map[string]string{}
 	if deviceHint != "" {
 		body["deviceHint"] = deviceHint
@@ -211,14 +211,6 @@ func (c *AttestClient) IssueChallenge(ctx context.Context, deviceHint string) (C
 		return Challenge{}, fmt.Errorf("%w: challenge response missing challengeId/nonce/expiresAt", ErrAttestHTTP)
 	}
 	return out, nil
-}
-
-// CreateChallenge is a deprecated alias for IssueChallenge, renamed for the
-// Client ABI 2.0 backend-relay contract.
-//
-// Deprecated: use IssueChallenge.
-func (c *AttestClient) CreateChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
-	return c.IssueChallenge(ctx, deviceHint)
 }
 
 // verifyResponseBody is the wire shape of the verify endpoint. The pass/fail
@@ -239,9 +231,9 @@ type verifyResponseBody struct {
 // carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems return
 // a non-nil error (see the package sentinels). evidence is passed through
 // verbatim.
-func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
+func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
 	if opts.ChallengeID == "" {
-		return AttestResult{}, fmt.Errorf("%w: Attest requires ChallengeID (from CreateChallenge)", ErrChallenge)
+		return AttestResult{}, fmt.Errorf("%w: Verify requires ChallengeID (from IssueChallenge)", ErrChallenge)
 	}
 	body := map[string]any{
 		"challengeId": opts.ChallengeID,
@@ -278,14 +270,6 @@ func (c *AttestClient) Verify(ctx context.Context, evidence Evidence, opts Attes
 	}, nil
 }
 
-// Attest is a deprecated alias for Verify, renamed for the Client ABI 2.0
-// backend-relay contract.
-//
-// Deprecated: use Verify.
-func (c *AttestClient) Attest(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
-	return c.Verify(ctx, evidence, opts)
-}
-
 // parseDeviceVerdict decodes the verdict.device object (already an any from the
 // generic JSON decode) into a typed *DeviceVerdict, carrying the additive cohort
 // fields. Returns nil when no device object is present or it cannot be decoded;
@@ -309,7 +293,7 @@ func parseDeviceVerdict(device any) *DeviceVerdict {
 // It maps only transport failures to ErrAttestHTTP; status interpretation is
 // left to the caller (used by relay legs that must inspect specific statuses
 // such as the enroll 409). The caller owns closing resp.Body.
-func (c *AttestClient) rawPost(ctx context.Context, path string, body any) (*http.Response, error) {
+func (c *Client) rawPost(ctx context.Context, path string, body any) (*http.Response, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: marshal request: %v", ErrAttestHTTP, err)
@@ -331,7 +315,7 @@ func (c *AttestClient) rawPost(ctx context.Context, path string, body any) (*htt
 
 // post issues an authenticated JSON POST and decodes the 2xx body into out,
 // mapping non-2xx responses to the matching typed error.
-func (c *AttestClient) post(ctx context.Context, path string, body any, out any) error {
+func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	resp, err := c.rawPost(ctx, path, body)
 	if err != nil {
 		return err
