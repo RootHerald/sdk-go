@@ -43,9 +43,6 @@ func TestRelayEnroll_FreshEnroll201(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RelayEnroll: %v", err)
 	}
-	if res.AlreadyEnrolled {
-		t.Errorf("AlreadyEnrolled = true, want false for 201")
-	}
 	if res.DeviceID != "dev-1" {
 		t.Errorf("DeviceID = %q, want dev-1", res.DeviceID)
 	}
@@ -70,29 +67,6 @@ func TestRelayEnroll_FreshEnroll201(t *testing.T) {
 	}
 }
 
-func TestRelayEnroll_AlreadyEnrolled409(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"deviceId": "dev-existing"})
-	}))
-	defer srv.Close()
-
-	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.RelayEnroll(context.Background(), validEnrollBlob())
-	if err != nil {
-		t.Fatalf("RelayEnroll 409 returned error: %v (409 already-enrolled is not an error)", err)
-	}
-	if !res.AlreadyEnrolled {
-		t.Errorf("AlreadyEnrolled = false, want true for 409")
-	}
-	if res.DeviceID != "dev-existing" {
-		t.Errorf("DeviceID = %q, want dev-existing", res.DeviceID)
-	}
-	if res.Challenge != nil {
-		t.Errorf("Challenge = %+v, want nil for already-enrolled", res.Challenge)
-	}
-}
 
 func TestRelayEnroll_409MissingDeviceID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

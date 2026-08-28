@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 )
 
 // Backend-relay enroll sentinel errors (Client ABI 2.0). Use errors.Is to switch
@@ -85,21 +84,17 @@ type EnrollActivationResponse struct {
 	AkPublicKey string `json:"akPublicKey,omitempty"`
 }
 
-// RelayEnrollResult normalizes the asymmetric 201/409 outcome of the enroll
-// relay leg into one value so callers branch on AlreadyEnrolled instead of
-// re-parsing HTTP status. DeviceID is always resolved.
+// RelayEnrollResult is the outcome of the enroll relay leg.
 //
-//   - AlreadyEnrolled == false: a fresh 201 enroll. Challenge is non-nil; relay
-//     it to the client's EnrollComplete, then call RelayActivate.
-//   - AlreadyEnrolled == true: a 409 short-circuit. The device is already bound,
-//     so SKIP RelayActivate and just use DeviceID. Challenge is nil.
+// Enrolment always issues a challenge, including for a device already known —
+// re-enrolment is how a device rotates its attestation key, so short-circuiting
+// it would make rotation impossible. Hand Challenge to the client's
+// EnrollComplete, then pass the result to RelayActivate.
 type RelayEnrollResult struct {
-	// AlreadyEnrolled reports whether the device was already bound (409).
-	AlreadyEnrolled bool
-	// DeviceID is the resolved device id (UUID), present in both outcomes.
+	// DeviceID is this tenant's alias for the device, not a global identifier.
+	// Another tenant enrolling the same silicon is told a different one.
 	DeviceID string
-	// Challenge is the MakeCredential challenge for a fresh enroll; nil when
-	// AlreadyEnrolled is true.
+	// Challenge is the MakeCredential challenge to relay to the client.
 	Challenge *EnrollActivationChallenge
 }
 
@@ -116,14 +111,7 @@ type RelayActivateResponse struct {
 
 // RelayEnroll relays the client's EnrollBegin() blob to RootHerald via
 // POST {baseURL}/api/v1/devices/enroll, authenticated with the rh_sk_ secret,
-// and resolves the asymmetric response (see RelayEnrollResult):
-//
-//   - 201 — a fresh enroll: returns {DeviceID, Challenge, AlreadyEnrolled:false}.
-//     Hand Challenge to the client's EnrollComplete, then pass the result to
-//     RelayActivate.
-//   - 409 — the device is already enrolled: returns {DeviceID, AlreadyEnrolled:
-//     true} with no error and no Challenge. SKIP RelayActivate — the device is
-//     already bound; just use DeviceID.
+// and returns the challenge to hand back to the client's EnrollComplete.
 //
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
 // backend helper is the only thing that does.
@@ -138,23 +126,6 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 	}
 	defer resp.Body.Close()
 
-	// 409 already-enrolled: the body carries only deviceId. Resolve it and signal
-	// "skip activate" rather than treating it as an error.
-	if resp.StatusCode == http.StatusConflict {
-		var body struct {
-			DeviceID string `json:"deviceId"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		if body.DeviceID == "" {
-			return RelayEnrollResult{}, &APIError{
-				StatusCode: http.StatusConflict,
-				Message:    "already-enrolled (409) response missing deviceId",
-				sentinel:   ErrAttestHTTP,
-			}
-		}
-		return RelayEnrollResult{AlreadyEnrolled: true, DeviceID: body.DeviceID}, nil
-	}
-
 	if resp.StatusCode/100 != 2 {
 		return RelayEnrollResult{}, toAPIError(resp)
 	}
@@ -166,7 +137,7 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 	if ch.DeviceID == "" || ch.CredentialBlob == "" || ch.EncryptedSecret == "" {
 		return RelayEnrollResult{}, fmt.Errorf("%w: enroll response missing deviceId/credentialBlob/encryptedSecret", ErrAttestHTTP)
 	}
-	return RelayEnrollResult{AlreadyEnrolled: false, DeviceID: ch.DeviceID, Challenge: &ch}, nil
+	return RelayEnrollResult{DeviceID: ch.DeviceID, Challenge: &ch}, nil
 }
 
 // RelayActivate relays the client's EnrollComplete() blob (the decrypted
