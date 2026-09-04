@@ -55,7 +55,7 @@ func TestRelayEnroll_FreshEnroll201(t *testing.T) {
 	if gotAuth != "Bearer rh_sk_test_key" {
 		t.Errorf("auth = %q", gotAuth)
 	}
-	if gotPath != "/api/v1/devices/enroll" {
+	if gotPath != "/api/v1/attest/enroll" {
 		t.Errorf("path = %q", gotPath)
 	}
 	if gotMethod != http.MethodPost {
@@ -162,7 +162,7 @@ func TestRelayActivate_Success(t *testing.T) {
 	if gotAuth != "Bearer rh_sk_test_key" {
 		t.Errorf("auth = %q", gotAuth)
 	}
-	if gotPath != "/api/v1/devices/activate" {
+	if gotPath != "/api/v1/attest/activate" {
 		t.Errorf("path = %q", gotPath)
 	}
 	// Wire shape: deviceId/decryptedSecret round-trip verbatim.

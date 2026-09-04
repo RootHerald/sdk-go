@@ -44,7 +44,7 @@ func TestClient_IssueChallenge(t *testing.T) {
 	if gotAuth != "Bearer rh_sk_test_key" {
 		t.Errorf("auth = %q", gotAuth)
 	}
-	if gotPath != "/api/v1/attestations/challenge" {
+	if gotPath != "/api/v1/attest/challenge" {
 		t.Errorf("path = %q", gotPath)
 	}
 }

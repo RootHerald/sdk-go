@@ -32,7 +32,7 @@ const (
 )
 
 // EnrollRequestBlob is the client's EnrollBegin() output — the body of
-// POST /api/v1/devices/enroll. The dumb client gathers the EK material and the
+// POST /api/v1/attest/enroll. The dumb client gathers the EK material and the
 // freshly created AK public area; this backend helper relays it verbatim to
 // RootHerald, which validates the EK chain, template-checks the AK, and returns
 // an EnrollActivationChallenge. The SDK passes these fields through without
@@ -57,7 +57,7 @@ type EnrollRequestBlob struct {
 }
 
 // EnrollActivationChallenge is the MakeCredential challenge — the 201 response
-// body of POST /api/v1/devices/enroll and the input to the client's
+// body of POST /api/v1/attest/enroll and the input to the client's
 // EnrollComplete(). credentialBlob and encryptedSecret are the
 // TPM2_MakeCredential outputs (already TPM2B-framed); the client feeds them into
 // TPM2_ActivateCredential.
@@ -71,7 +71,7 @@ type EnrollActivationChallenge struct {
 }
 
 // EnrollActivationResponse is the client's EnrollComplete() output — the body of
-// POST /api/v1/devices/activate. The client decrypts the challenge inside the
+// POST /api/v1/attest/activate. The client decrypts the challenge inside the
 // TPM and returns the released secret to prove EK->AK binding.
 type EnrollActivationResponse struct {
 	// DeviceID is the deviceId from the EnrollActivationChallenge. Required.
@@ -98,7 +98,7 @@ type RelayEnrollResult struct {
 	Challenge *EnrollActivationChallenge
 }
 
-// RelayActivateResponse is the terminal body of POST /api/v1/devices/activate.
+// RelayActivateResponse is the terminal body of POST /api/v1/attest/activate.
 // DeviceID is the load-bearing field the backend maps to its user.
 type RelayActivateResponse struct {
 	// DeviceID is the enrolled device id (UUID).
@@ -110,7 +110,7 @@ type RelayActivateResponse struct {
 }
 
 // RelayEnroll relays the client's EnrollBegin() blob to RootHerald via
-// POST {baseURL}/api/v1/devices/enroll, authenticated with the rh_sk_ secret,
+// POST {baseURL}/api/v1/attest/enroll, authenticated with the rh_sk_ secret,
 // and returns the challenge to hand back to the client's EnrollComplete.
 //
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
@@ -120,7 +120,7 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 		return RelayEnrollResult{}, fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea", ErrInvalidEnrollBlob)
 	}
 
-	resp, err := c.rawPost(ctx, "/api/v1/devices/enroll", blob)
+	resp, err := c.rawPost(ctx, "/api/v1/attest/enroll", blob)
 	if err != nil {
 		return RelayEnrollResult{}, err
 	}
@@ -141,7 +141,7 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 }
 
 // RelayActivate relays the client's EnrollComplete() blob (the decrypted
-// credential secret) to RootHerald via POST {baseURL}/api/v1/devices/activate,
+// credential secret) to RootHerald via POST {baseURL}/api/v1/attest/activate,
 // completing the EK->AK credential-activation handshake. Call this only when
 // RelayEnroll returned AlreadyEnrolled == false.
 //
@@ -153,7 +153,7 @@ func (c *Client) RelayActivate(ctx context.Context, activation EnrollActivationR
 	}
 
 	var out RelayActivateResponse
-	if err := c.post(ctx, "/api/v1/devices/activate", activation, &out); err != nil {
+	if err := c.post(ctx, "/api/v1/attest/activate", activation, &out); err != nil {
 		return RelayActivateResponse{}, err
 	}
 	if out.DeviceID == "" {
