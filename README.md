@@ -56,12 +56,12 @@ The client emits opaque `EnrollBegin()` / `EnrollComplete()` blobs; this backend
 helper relays them with the `rh_sk_` secret:
 
 ```go
-er, _ := client.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/devices/enroll
+er, _ := client.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/attest/enroll
 if er.AlreadyEnrolled {
     // device already bound; skip activate, just use er.DeviceID
 } else {
     // hand er.Challenge to the client's EnrollComplete, then relay the result
-    act, _ := client.RelayActivate(ctx, activationResponse) // POST /api/v1/devices/activate
+    act, _ := client.RelayActivate(ctx, activationResponse) // POST /api/v1/attest/activate
     _ = act.DeviceID
 }
 ```

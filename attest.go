@@ -195,7 +195,7 @@ func isLoopbackHost(host string) bool {
 }
 
 // IssueChallenge mints a relay-friendly nonce via
-// POST {baseURL}/api/v1/attestations/challenge. deviceHint is optional and may
+// POST {baseURL}/api/v1/attest/challenge. deviceHint is optional and may
 // be "" to omit it. Relay the returned Nonce to the client; the client quotes
 // over it, then submit the resulting evidence with Verify using ChallengeID.
 func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
@@ -204,7 +204,7 @@ func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challen
 		body["deviceHint"] = deviceHint
 	}
 	var out Challenge
-	if err := c.post(ctx, "/api/v1/attestations/challenge", body, &out); err != nil {
+	if err := c.post(ctx, "/api/v1/attest/challenge", body, &out); err != nil {
 		return Challenge{}, err
 	}
 	if out.ChallengeID == "" || out.Nonce == "" || out.ExpiresAt == "" {
@@ -223,7 +223,7 @@ type verifyResponseBody struct {
 }
 
 // Verify submits the opaque evidence blob for server-side appraisal via
-// POST {baseURL}/api/v1/attestations/verify and returns the verdict. The verdict
+// POST {baseURL}/api/v1/attest/verify and returns the verdict. The verdict
 // is computed by RootHerald and returned here, to the customer's backend — it
 // never travels through the client, which holds no key and gets no verdict.
 //
@@ -247,7 +247,7 @@ func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptio
 	}
 
 	var resp verifyResponseBody
-	if err := c.post(ctx, "/api/v1/attestations/verify", body, &resp); err != nil {
+	if err := c.post(ctx, "/api/v1/attest/verify", body, &resp); err != nil {
 		return AttestResult{}, err
 	}
 	if resp.Verdict == nil {

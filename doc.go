@@ -22,12 +22,12 @@
 // EnrollBegin()/EnrollComplete() blobs and this backend helper relays them with
 // the rh_sk_ secret:
 //
-//	er, _ := rh.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/devices/enroll
+//	er, _ := rh.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/attest/enroll
 //	if er.AlreadyEnrolled {
 //	    // device already bound; skip activate, just use er.DeviceID
 //	} else {
 //	    // hand er.Challenge to the client's EnrollComplete, then relay the result
-//	    act, _ := rh.RelayActivate(ctx, activationResponse) // POST /api/v1/devices/activate
+//	    act, _ := rh.RelayActivate(ctx, activationResponse) // POST /api/v1/attest/activate
 //	    _ = act.DeviceID
 //	}
 package rootherald
