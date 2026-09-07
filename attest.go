@@ -27,9 +27,16 @@ const secretKeyPrefix = "rh_sk_"
 //
 //	401 -> ErrInvalidSecretKey   (bad/absent secret key)
 //	422 -> ErrUnknownPolicy      (unknown/foreign policy name)
+//	422 -> ErrPolicyDowngrade    (error code policy_downgrade: Verify named a
+//	                              policy weaker than the challenge's)
+//	422 -> ErrAdmissionRefused   (error code admission_refused: the device's TPM
+//	                              class can never satisfy the challenge's policy)
 //	409 -> ErrChallenge          (challenge unknown/expired/already used)
 //	400 -> ErrInvalidEvidence    (evidence malformed/unparseable)
 //	429 -> ErrQuotaExceeded      (rate/quota limit hit)
+//
+// A 422 is told apart by the server's error code; one without a recognised
+// code is ErrUnknownPolicy. The refused TPM class travels in APIError.Message.
 //
 // An un-enrolled or failing device is NOT an error: Attest returns a normal
 // verdict carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems
@@ -38,10 +45,18 @@ var (
 	ErrInvalidSecretKey = errors.New("rootherald: invalid secret key")
 	ErrInvalidBaseURL   = errors.New("rootherald: invalid base URL")
 	ErrUnknownPolicy    = errors.New("rootherald: unknown policy")
+	ErrPolicyDowngrade  = errors.New("rootherald: policy weaker than the challenge's")
+	ErrAdmissionRefused = errors.New("rootherald: enrolment refused for this device class")
 	ErrChallenge        = errors.New("rootherald: challenge invalid or expired")
 	ErrInvalidEvidence  = errors.New("rootherald: invalid evidence")
 	ErrQuotaExceeded    = errors.New("rootherald: quota exceeded")
 	ErrAttestHTTP       = errors.New("rootherald: attestation http error")
+)
+
+// Server error codes that refine a 422 beyond "unknown policy".
+const (
+	codePolicyDowngrade  = "policy_downgrade"
+	codeAdmissionRefused = "admission_refused"
 )
 
 // APIError carries the HTTP status and server-provided error detail for a
@@ -64,13 +79,81 @@ func (e *APIError) Error() string {
 // Unwrap returns the matching sentinel so errors.Is works.
 func (e *APIError) Unwrap() error { return e.sentinel }
 
-// Challenge is the relay-friendly nonce minted by IssueChallenge. Relay Nonce
-// to the dumb client; the client quotes over it and returns an opaque evidence
-// blob, which the server submits with Attest using ChallengeID.
+// Ask names one thing a challenge asks the device to produce.
+type Ask string
+
+const (
+	// AskIdentity asks for proof the evidence comes from the enrolled TPM.
+	AskIdentity Ask = "identity"
+	// AskPosture asks for the measured-boot event log alongside the quote.
+	AskPosture Ask = "posture"
+	// AskKey asks the device to create a TPM-resident signing key and certify it
+	// with its attestation key. The verdict then carries the key's public half as
+	// AttestResult.Key.
+	AskKey Ask = "key"
+)
+
+// ChallengeOptions configures IssueChallengeWithOptions. The zero value asks
+// for identity and posture, which is what IssueChallenge sends.
+type ChallengeOptions struct {
+	// Ask lists what the device must produce. Empty means identity + posture.
+	Ask []Ask
+	// Policy pins the policy this challenge will be appraised under. A later
+	// Verify may name the same policy or none; naming a weaker one fails with
+	// ErrPolicyDowngrade.
+	Policy string
+	// KeyPurpose is what a certified key will be used for. Read only when Ask
+	// contains AskKey; "sign" is the only purpose today.
+	KeyPurpose string
+	// DeviceHint is an optional advisory hint identifying the device.
+	DeviceHint string
+}
+
+// Challenge is minted by IssueChallenge. Relay the Challenge string to the
+// dumb client verbatim; the client parses it to learn the nonce and the ask,
+// quotes over the nonce, and returns an opaque evidence blob, which the server
+// submits with Verify using ChallengeID.
 type Challenge struct {
 	ChallengeID string `json:"challengeId"`
-	Nonce       string `json:"nonce"`
-	ExpiresAt   string `json:"expiresAt"`
+	// Challenge is the string to relay to the client:
+	// "rhc1.<base64url nonce>.<base64url ask-json>". Empty when the server
+	// predates the ask model; relay Nonce in that case.
+	Challenge string `json:"challenge"`
+	// Nonce is the base64 nonce the client quotes over, also carried inside
+	// Challenge.
+	Nonce     string `json:"nonce"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+// JWK is the public half of a certified key, as the server returns it.
+type JWK struct {
+	// Kty is the key type; "EC" is the only one today.
+	Kty string `json:"kty"`
+	// Crv is the curve: "P-256" or "P-384".
+	Crv string `json:"crv"`
+	// X and Y are the base64url-encoded affine coordinates.
+	X string `json:"x"`
+	Y string `json:"y"`
+}
+
+// CertifiedKey is a TPM-resident signing key the appraisal certified. Store
+// JWK against the user; a later request signed by the device is checked
+// locally with VerifyKeySignature, with no call to RootHerald.
+//
+// KeyID identifies the key, not the device, and a fresh key is certified per
+// ask.
+type CertifiedKey struct {
+	// KeyID is RootHerald's id for this key, stable for the key's lifetime.
+	KeyID string `json:"keyId"`
+	// JWK is the public key.
+	JWK JWK `json:"jwk"`
+	// Purpose echoes the challenge's KeyPurpose; "sign" today.
+	Purpose string `json:"purpose"`
+	// AuthPolicy is the base64 authPolicy digest from the key's public area,
+	// when the key was created with one.
+	AuthPolicy string `json:"authPolicy,omitempty"`
+	// CertifiedAt is when the certification was appraised.
+	CertifiedAt time.Time `json:"certifiedAt"`
 }
 
 // Evidence is the opaque, client-collected attestation blob. The SDK passes it
@@ -105,6 +188,10 @@ type AttestResult struct {
 	// enroll-on-miss signal: true when the device must enroll before a verdict
 	// can be issued.
 	EnrollmentRequired bool
+	// Key is the signing key the appraisal certified (top-level "key"). Present
+	// only when the challenge asked for AskKey and the verdict passed; nil
+	// otherwise, whatever the evidence carried.
+	Key *CertifiedKey
 	// Raw is the full decoded verdict object as returned by the server, for
 	// callers that need fields the typed surface does not expose yet.
 	Raw map[string]any
@@ -194,14 +281,33 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// IssueChallenge mints a relay-friendly nonce via
+// IssueChallenge mints a challenge asking for identity and posture via
 // POST {baseURL}/api/v1/attest/challenge. deviceHint is optional and may
-// be "" to omit it. Relay the returned Nonce to the client; the client quotes
-// over it, then submit the resulting evidence with Verify using ChallengeID.
+// be "" to omit it. Relay the returned Challenge string to the client; the
+// client quotes over the nonce inside it, then submit the resulting evidence
+// with Verify using ChallengeID. Use IssueChallengeWithOptions to change the
+// ask or pin a policy.
 func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
-	body := map[string]string{}
-	if deviceHint != "" {
-		body["deviceHint"] = deviceHint
+	return c.IssueChallengeWithOptions(ctx, ChallengeOptions{DeviceHint: deviceHint})
+}
+
+// IssueChallengeWithOptions mints a challenge carrying the given ask via
+// POST {baseURL}/api/v1/attest/challenge. Relay the returned Challenge string
+// to the client verbatim; it parses the ask from it and produces matching
+// evidence, which the server submits with Verify using ChallengeID.
+func (c *Client) IssueChallengeWithOptions(ctx context.Context, opts ChallengeOptions) (Challenge, error) {
+	body := map[string]any{}
+	if opts.DeviceHint != "" {
+		body["deviceHint"] = opts.DeviceHint
+	}
+	if len(opts.Ask) > 0 {
+		body["ask"] = opts.Ask
+	}
+	if opts.Policy != "" {
+		body["policy"] = opts.Policy
+	}
+	if opts.KeyPurpose != "" {
+		body["keyPurpose"] = opts.KeyPurpose
 	}
 	var out Challenge
 	if err := c.post(ctx, "/api/v1/attest/challenge", body, &out); err != nil {
@@ -214,12 +320,13 @@ func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challen
 }
 
 // verifyResponseBody is the wire shape of the verify endpoint. The pass/fail
-// token lives at verdict.device.verdict; assuranceClaimsMet and
-// enrollmentRequired are top-level siblings of verdict.
+// token lives at verdict.device.verdict; assuranceClaimsMet, enrollmentRequired
+// and key are top-level siblings of verdict.
 type verifyResponseBody struct {
 	Verdict            map[string]any `json:"verdict"`
 	AssuranceClaimsMet []string       `json:"assuranceClaimsMet"`
 	EnrollmentRequired bool           `json:"enrollmentRequired"`
+	Key                *CertifiedKey  `json:"key"`
 }
 
 // Verify submits the opaque evidence blob for server-side appraisal via
@@ -261,11 +368,22 @@ func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptio
 	if device != nil {
 		rawVerdict = device.Verdict
 	}
+	verdict := mapVerdict(rawVerdict)
+	key := resp.Key
+	if key != nil && (key.KeyID == "" || key.JWK.Kty == "" || key.JWK.X == "" || key.JWK.Y == "") {
+		return AttestResult{}, fmt.Errorf("%w: verify response key missing keyId/jwk", ErrAttestHTTP)
+	}
+	if verdict != VerdictAllow {
+		// The contract certifies nothing on a failing verdict; do not let a
+		// stray key on the wire outlive the verdict it came with.
+		key = nil
+	}
 	return AttestResult{
-		Verdict:            mapVerdict(rawVerdict),
+		Verdict:            verdict,
 		Device:             device,
 		AssuranceClaimsMet: resp.AssuranceClaimsMet,
 		EnrollmentRequired: resp.EnrollmentRequired,
+		Key:                key,
 		Raw:                resp.Verdict,
 	}, nil
 }
@@ -291,8 +409,7 @@ func parseDeviceVerdict(device any) *DeviceVerdict {
 
 // rawPost issues an authenticated JSON POST and returns the raw *http.Response.
 // It maps only transport failures to ErrAttestHTTP; status interpretation is
-// left to the caller (used by relay legs that must inspect specific statuses
-// such as the enroll 409). The caller owns closing resp.Body.
+// left to the caller. The caller owns closing resp.Body.
 func (c *Client) rawPost(ctx context.Context, path string, body any) (*http.Response, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -351,7 +468,14 @@ func toAPIError(resp *http.Response) error {
 	case http.StatusUnauthorized: // 401
 		sentinel = ErrInvalidSecretKey
 	case http.StatusUnprocessableEntity: // 422
-		sentinel = ErrUnknownPolicy
+		switch parsed.Error {
+		case codePolicyDowngrade:
+			sentinel = ErrPolicyDowngrade
+		case codeAdmissionRefused:
+			sentinel = ErrAdmissionRefused
+		default:
+			sentinel = ErrUnknownPolicy
+		}
 	case http.StatusConflict: // 409
 		sentinel = ErrChallenge
 	case http.StatusBadRequest: // 400

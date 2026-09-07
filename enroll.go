@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 )
 
 // Backend-relay enroll sentinel errors (Client ABI 2.0). Use errors.Is to switch
@@ -64,6 +65,9 @@ type EnrollRequestBlob struct {
 type EnrollActivationChallenge struct {
 	// DeviceID is the deterministic device id (UUID) derived server-side from the EK.
 	DeviceID string `json:"deviceId"`
+	// ChallengeID is the attestation challenge this enrolment was admitted
+	// against, echoed when RelayEnrollWithChallenge supplied one.
+	ChallengeID string `json:"challengeId,omitempty"`
 	// CredentialBlob is the base64 TPM2_MakeCredential credential blob (id-object).
 	CredentialBlob string `json:"credentialBlob"`
 	// EncryptedSecret is the base64 TPM2_MakeCredential encrypted secret.
@@ -112,15 +116,32 @@ type RelayActivateResponse struct {
 // RelayEnroll relays the client's EnrollBegin() blob to RootHerald via
 // POST {baseURL}/api/v1/attest/enroll, authenticated with the rh_sk_ secret,
 // and returns the challenge to hand back to the client's EnrollComplete.
+// Admission runs against the tenant's default policy; see
+// RelayEnrollWithChallenge to admit against a specific challenge's policy.
 //
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
 // backend helper is the only thing that does.
 func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (RelayEnrollResult, error) {
+	return c.RelayEnrollWithChallenge(ctx, blob, "")
+}
+
+// RelayEnrollWithChallenge is RelayEnroll scoped to a live challenge from
+// IssueChallenge: the request goes to
+// POST {baseURL}/api/v1/attest/enroll?challengeId=<id>, so admission runs
+// against the policy stored on that challenge instead of the tenant default. A
+// device whose TPM class can never satisfy that policy is refused before it
+// gets an attestation key, as ErrAdmissionRefused with the class in
+// APIError.Message. An empty challengeID behaves like RelayEnroll.
+func (c *Client) RelayEnrollWithChallenge(ctx context.Context, blob EnrollRequestBlob, challengeID string) (RelayEnrollResult, error) {
 	if blob.EkPublicKey == "" || blob.AkPublicArea == "" {
 		return RelayEnrollResult{}, fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea", ErrInvalidEnrollBlob)
 	}
 
-	resp, err := c.rawPost(ctx, "/api/v1/attest/enroll", blob)
+	path := "/api/v1/attest/enroll"
+	if challengeID != "" {
+		path += "?challengeId=" + url.QueryEscape(challengeID)
+	}
+	resp, err := c.rawPost(ctx, path, blob)
 	if err != nil {
 		return RelayEnrollResult{}, err
 	}
@@ -142,8 +163,9 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 
 // RelayActivate relays the client's EnrollComplete() blob (the decrypted
 // credential secret) to RootHerald via POST {baseURL}/api/v1/attest/activate,
-// completing the EK->AK credential-activation handshake. Call this only when
-// RelayEnroll returned AlreadyEnrolled == false.
+// completing the EK->AK credential-activation handshake. Every RelayEnroll
+// leads here: enrolment always issues a challenge, including for a known
+// device, because re-enrolment is how a device rotates its attestation key.
 //
 // It returns the terminal {DeviceID, Status, EnrolledAt} body; DeviceID is the
 // load-bearing field the backend maps to its user.
