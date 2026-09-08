@@ -85,8 +85,8 @@ if !rh.VerifyKeySignature(jwk, message, signature) {
 ## One-time device enroll (backend-relayed)
 
 The client emits opaque `EnrollBegin()` / `EnrollComplete()` blobs; this backend
-helper relays them with the `rh_sk_` secret. Enrolment always issues a
-challenge, including for a device already known — re-enrolment is how a device
+helper relays them with the `rh_sk_` secret. Enrollment always issues a
+challenge, including for a device already known — re-enrollment is how a device
 rotates its attestation key — so every enroll is followed by activate:
 
 ```go

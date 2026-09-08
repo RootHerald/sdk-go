@@ -65,7 +65,7 @@ type EnrollRequestBlob struct {
 type EnrollActivationChallenge struct {
 	// DeviceID is the deterministic device id (UUID) derived server-side from the EK.
 	DeviceID string `json:"deviceId"`
-	// ChallengeID is the attestation challenge this enrolment was admitted
+	// ChallengeID is the attestation challenge this enrollment was admitted
 	// against, echoed when RelayEnrollWithChallenge supplied one.
 	ChallengeID string `json:"challengeId,omitempty"`
 	// CredentialBlob is the base64 TPM2_MakeCredential credential blob (id-object).
@@ -90,8 +90,8 @@ type EnrollActivationResponse struct {
 
 // RelayEnrollResult is the outcome of the enroll relay leg.
 //
-// Enrolment always issues a challenge, including for a device already known —
-// re-enrolment is how a device rotates its attestation key, so short-circuiting
+// Enrollment always issues a challenge, including for a device already known —
+// re-enrollment is how a device rotates its attestation key, so short-circuiting
 // it would make rotation impossible. Hand Challenge to the client's
 // EnrollComplete, then pass the result to RelayActivate.
 type RelayEnrollResult struct {
@@ -164,8 +164,8 @@ func (c *Client) RelayEnrollWithChallenge(ctx context.Context, blob EnrollReques
 // RelayActivate relays the client's EnrollComplete() blob (the decrypted
 // credential secret) to RootHerald via POST {baseURL}/api/v1/attest/activate,
 // completing the EK->AK credential-activation handshake. Every RelayEnroll
-// leads here: enrolment always issues a challenge, including for a known
-// device, because re-enrolment is how a device rotates its attestation key.
+// leads here: enrollment always issues a challenge, including for a known
+// device, because re-enrollment is how a device rotates its attestation key.
 //
 // It returns the terminal {DeviceID, Status, EnrolledAt} body; DeviceID is the
 // load-bearing field the backend maps to its user.

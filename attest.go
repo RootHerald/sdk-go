@@ -46,7 +46,7 @@ var (
 	ErrInvalidBaseURL   = errors.New("rootherald: invalid base URL")
 	ErrUnknownPolicy    = errors.New("rootherald: unknown policy")
 	ErrPolicyDowngrade  = errors.New("rootherald: policy weaker than the challenge's")
-	ErrAdmissionRefused = errors.New("rootherald: enrolment refused for this device class")
+	ErrAdmissionRefused = errors.New("rootherald: enrollment refused for this device class")
 	ErrChallenge        = errors.New("rootherald: challenge invalid or expired")
 	ErrInvalidEvidence  = errors.New("rootherald: invalid evidence")
 	ErrQuotaExceeded    = errors.New("rootherald: quota exceeded")
