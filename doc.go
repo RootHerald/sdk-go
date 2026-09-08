@@ -38,7 +38,7 @@
 //
 // One-time device enroll is relayed the same way — the client emits opaque
 // EnrollBegin()/EnrollComplete() blobs and this backend helper relays them with
-// the rh_sk_ secret. Enrolment always issues a challenge, so every RelayEnroll
+// the rh_sk_ secret. Enrollment always issues a challenge, so every RelayEnroll
 // is followed by RelayActivate:
 //
 //	er, _ := rh.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/attest/enroll
