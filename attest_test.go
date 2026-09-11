@@ -57,6 +57,9 @@ func TestClient_AttestPassVerdict(t *testing.T) {
 		if body["challengeId"] != "ch_1" {
 			t.Errorf("challengeId = %v", body["challengeId"])
 		}
+		if _, present := body["policy"]; present {
+			t.Errorf("verify body carried a policy; policies bind to the API key: %v", body)
+		}
 		gotDisclosure = body["requestedDisclosureClass"]
 		w.Header().Set("Content-Type", "application/json")
 		// Real wire shape: the pass/fail token lives at verdict.device.verdict,

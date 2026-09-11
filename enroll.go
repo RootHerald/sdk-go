@@ -116,8 +116,8 @@ type RelayActivateResponse struct {
 // RelayEnroll relays the client's EnrollBegin() blob to RootHerald via
 // POST {baseURL}/api/v1/attest/enroll, authenticated with the rh_sk_ secret,
 // and returns the challenge to hand back to the client's EnrollComplete.
-// Admission runs against the tenant's default policy; see
-// RelayEnrollWithChallenge to admit against a specific challenge's policy.
+// Admission runs under the identity policy bound to the API key; see
+// RelayEnrollWithChallenge to pin it to a live challenge.
 //
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
 // backend helper is the only thing that does.
@@ -127,11 +127,11 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 
 // RelayEnrollWithChallenge is RelayEnroll scoped to a live challenge from
 // IssueChallenge: the request goes to
-// POST {baseURL}/api/v1/attest/enroll?challengeId=<id>, so admission runs
-// against the policy stored on that challenge instead of the tenant default. A
-// device whose TPM class can never satisfy that policy is refused before it
-// gets an attestation key, as ErrAdmissionRefused with the class in
-// APIError.Message. An empty challengeID behaves like RelayEnroll.
+// POST {baseURL}/api/v1/attest/enroll?challengeId=<id>. Admission runs under
+// the identity policy bound to the API key, pinned on that challenge when it
+// was minted, so a device whose TPM class can never satisfy that policy is
+// refused before it gets an attestation key, as ErrAdmissionRefused with the
+// class in APIError.Message. An empty challengeID behaves like RelayEnroll.
 func (c *Client) RelayEnrollWithChallenge(ctx context.Context, blob EnrollRequestBlob, challengeID string) (RelayEnrollResult, error) {
 	if blob.EkPublicKey == "" || blob.AkPublicArea == "" {
 		return RelayEnrollResult{}, fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea", ErrInvalidEnrollBlob)

@@ -26,11 +26,11 @@ const secretKeyPrefix = "rh_sk_"
 // the HTTP status mapping of the @rootherald/node SDK:
 //
 //	401 -> ErrInvalidSecretKey   (bad/absent secret key)
-//	422 -> ErrUnknownPolicy      (unknown/foreign policy name)
-//	422 -> ErrPolicyDowngrade    (error code policy_downgrade: Verify named a
-//	                              policy weaker than the challenge's)
+//	422 -> ErrUnknownPolicy      (a policy bound to the API key no longer
+//	                              exists; nothing is substituted)
 //	422 -> ErrAdmissionRefused   (error code admission_refused: the device's TPM
-//	                              class can never satisfy the challenge's policy)
+//	                              class can never satisfy the identity policy
+//	                              bound to the key)
 //	409 -> ErrChallenge          (challenge unknown/expired/already used)
 //	400 -> ErrInvalidEvidence    (evidence malformed/unparseable)
 //	429 -> ErrQuotaExceeded      (rate/quota limit hit)
@@ -45,7 +45,6 @@ var (
 	ErrInvalidSecretKey = errors.New("rootherald: invalid secret key")
 	ErrInvalidBaseURL   = errors.New("rootherald: invalid base URL")
 	ErrUnknownPolicy    = errors.New("rootherald: unknown policy")
-	ErrPolicyDowngrade  = errors.New("rootherald: policy weaker than the challenge's")
 	ErrAdmissionRefused = errors.New("rootherald: enrollment refused for this device class")
 	ErrChallenge        = errors.New("rootherald: challenge invalid or expired")
 	ErrInvalidEvidence  = errors.New("rootherald: invalid evidence")
@@ -53,11 +52,8 @@ var (
 	ErrAttestHTTP       = errors.New("rootherald: attestation http error")
 )
 
-// Server error codes that refine a 422 beyond "unknown policy".
-const (
-	codePolicyDowngrade  = "policy_downgrade"
-	codeAdmissionRefused = "admission_refused"
-)
+// Server error code that refines a 422 beyond "unknown policy".
+const codeAdmissionRefused = "admission_refused"
 
 // APIError carries the HTTP status and server-provided error detail for a
 // failed Background-Check call. It wraps one of the sentinel errors above so
@@ -95,13 +91,13 @@ const (
 
 // ChallengeOptions configures IssueChallengeWithOptions. The zero value asks
 // for identity and posture, which is what IssueChallenge sends.
+//
+// There is no policy option. Policies bind to the API key: the key carries
+// an identity policy and, on Pro, a posture policy, and the server resolves
+// the one that applies from the key that mints the challenge.
 type ChallengeOptions struct {
 	// Ask lists what the device must produce. Empty means identity + posture.
 	Ask []Ask
-	// Policy pins the policy this challenge will be appraised under. A later
-	// Verify may name the same policy or none; naming a weaker one fails with
-	// ErrPolicyDowngrade.
-	Policy string
 	// KeyPurpose is what a certified key will be used for. Read only when Ask
 	// contains AskKey; "sign" is the only purpose today.
 	KeyPurpose string
@@ -163,10 +159,8 @@ type Evidence = json.RawMessage
 // AttestOptions configures a single Attest call.
 type AttestOptions struct {
 	// ChallengeID is the single-use challenge id from IssueChallenge. Required.
+	// The evidence is appraised under the policy pinned on that challenge.
 	ChallengeID string
-	// Policy is a caller-named policy: a tenant-owned policy id/name or a
-	// "rootherald:builtin:*" name. Unknown/foreign names fail closed (422).
-	Policy string
 	// RequestedDisclosureClass optionally requests how much device detail the
 	// verdict should disclose: "verdict" | "pseudonymous" | "derived" | "full".
 	// Empty omits the request and lets the server apply its default.
@@ -286,7 +280,7 @@ func isLoopbackHost(host string) bool {
 // be "" to omit it. Relay the returned Challenge string to the client; the
 // client quotes over the nonce inside it, then submit the resulting evidence
 // with Verify using ChallengeID. Use IssueChallengeWithOptions to change the
-// ask or pin a policy.
+// ask.
 func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
 	return c.IssueChallengeWithOptions(ctx, ChallengeOptions{DeviceHint: deviceHint})
 }
@@ -295,6 +289,12 @@ func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challen
 // POST {baseURL}/api/v1/attest/challenge. Relay the returned Challenge string
 // to the client verbatim; it parses the ask from it and produces matching
 // evidence, which the server submits with Verify using ChallengeID.
+//
+// The policy the challenge will be appraised under is resolved from the API
+// key and pinned on the challenge at mint. The SDK never sends a policy field;
+// a hand-built body that carries one is refused with 400 policy_bound_to_key.
+// Change what a key enforces from the dashboard or
+// PUT /api/v1/admin/api-keys/{id}/policies.
 func (c *Client) IssueChallengeWithOptions(ctx context.Context, opts ChallengeOptions) (Challenge, error) {
 	body := map[string]any{}
 	if opts.DeviceHint != "" {
@@ -302,9 +302,6 @@ func (c *Client) IssueChallengeWithOptions(ctx context.Context, opts ChallengeOp
 	}
 	if len(opts.Ask) > 0 {
 		body["ask"] = opts.Ask
-	}
-	if opts.Policy != "" {
-		body["policy"] = opts.Policy
 	}
 	if opts.KeyPurpose != "" {
 		body["keyPurpose"] = opts.KeyPurpose
@@ -334,6 +331,11 @@ type verifyResponseBody struct {
 // is computed by RootHerald and returned here, to the customer's backend — it
 // never travels through the client, which holds no key and gets no verdict.
 //
+// The evidence is appraised under the policy pinned on the challenge at mint,
+// which the server resolved from the API key. The SDK never sends a policy
+// field; a hand-built body that carries one is refused with 400
+// policy_bound_to_key.
+//
 // An un-enrolled / failing device is NOT an error — it returns a normal verdict
 // carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems return
 // a non-nil error (see the package sentinels). evidence is passed through
@@ -345,9 +347,6 @@ func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptio
 	body := map[string]any{
 		"challengeId": opts.ChallengeID,
 		"evidence":    json.RawMessage(evidence),
-	}
-	if opts.Policy != "" {
-		body["policy"] = opts.Policy
 	}
 	if opts.RequestedDisclosureClass != "" {
 		body["requestedDisclosureClass"] = opts.RequestedDisclosureClass
@@ -469,8 +468,6 @@ func toAPIError(resp *http.Response) error {
 		sentinel = ErrInvalidSecretKey
 	case http.StatusUnprocessableEntity: // 422
 		switch parsed.Error {
-		case codePolicyDowngrade:
-			sentinel = ErrPolicyDowngrade
 		case codeAdmissionRefused:
 			sentinel = ErrAdmissionRefused
 		default:

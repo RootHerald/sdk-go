@@ -29,12 +29,9 @@ chal, err := client.IssueChallenge(ctx, "" /* optional deviceHint */)
 // it and returns `evidence`.
 
 // 2) Submit the opaque evidence the client returned and get a verdict.
-res, err := client.Verify(ctx, evidence, rh.AttestOptions{
-    ChallengeID: chal.ChallengeID,
-    Policy:      "rootherald:builtin:strict-hardware", // optional
-})
+res, err := client.Verify(ctx, evidence, rh.AttestOptions{ChallengeID: chal.ChallengeID})
 if err != nil {
-    // 401 invalid secret key, 422 unknown policy / policy downgrade, 409
+    // 401 invalid secret key, 422 unknown policy / admission refused, 409
     // challenge, 400 evidence, 429 quota — use errors.Is(err, rh.ErrUnknownPolicy) etc.
     http.Error(w, "attestation error", http.StatusBadGateway)
     return
@@ -54,9 +51,17 @@ RootHerald verbatim. The raw `verdict` maps to the SDK enum as: `pass` →
 ## The challenge carries the ask
 
 `IssueChallenge` asks for identity and posture. `IssueChallengeWithOptions`
-sets the ask explicitly and can pin the policy the challenge will be appraised
-under; a `Verify` that later names a weaker policy fails with
-`ErrPolicyDowngrade`.
+sets the ask explicitly.
+
+Policies bind to your API key, not to calls. The key carries an identity
+policy and, on Pro, a posture policy; a posture ask runs under the posture
+policy and everything else under the identity policy. The resolved policy is
+pinned on the challenge when it is minted, and `Verify` appraises under it.
+Change what a key enforces from the dashboard or
+`PUT /api/v1/admin/api-keys/{id}/policies`; a `policy` field in a hand-built
+request body is refused with `400 policy_bound_to_key`. `ErrUnknownPolicy`
+(422 `unknown_policy`) means a policy bound to the key no longer exists;
+nothing is substituted.
 
 Asking for `AskKey` has the device create a TPM-resident signing key and
 certify it with its attestation key. A passing verdict then carries the public
@@ -96,10 +101,10 @@ act, _ := client.RelayActivate(ctx, activationResponse) // POST /api/v1/attest/a
 _ = act.DeviceID
 ```
 
-`RelayEnrollWithChallenge(ctx, blob, chal.ChallengeID)` admits the device
-against that challenge's policy instead of the tenant default, so a device
+Admission runs under the identity policy bound to your API key, so a device
 whose TPM class can never satisfy it is refused before it gets an attestation
 key: `errors.Is(err, rh.ErrAdmissionRefused)`, with the class in
-`APIError.Message`.
+`APIError.Message`. `RelayEnrollWithChallenge(ctx, blob, chal.ChallengeID)`
+pins admission to the policy on that live challenge.
 
 See `examples/hello/` for a runnable end-to-end demo.

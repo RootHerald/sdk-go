@@ -11,7 +11,8 @@ import (
 
 // IssueChallengeWithOptions puts the ask on the wire and returns the relay
 // string; IssueChallenge sends no ask, which the server reads as identity +
-// posture.
+// posture. Neither sends a policy: policies bind to the API key and the
+// server refuses the field with 400 policy_bound_to_key.
 func TestClient_IssueChallengeWithOptions(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +31,6 @@ func TestClient_IssueChallengeWithOptions(t *testing.T) {
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	chal, err := c.IssueChallengeWithOptions(context.Background(), ChallengeOptions{
 		Ask:        []Ask{AskIdentity, AskKey},
-		Policy:     "rootherald:builtin:strict-hardware",
 		KeyPurpose: "sign",
 		DeviceHint: "laptop-7",
 	})
@@ -44,8 +44,11 @@ func TestClient_IssueChallengeWithOptions(t *testing.T) {
 	if len(ask) != 2 || ask[0] != "identity" || ask[1] != "key" {
 		t.Errorf("ask sent = %v", gotBody["ask"])
 	}
-	if gotBody["policy"] != "rootherald:builtin:strict-hardware" || gotBody["keyPurpose"] != "sign" || gotBody["deviceHint"] != "laptop-7" {
+	if gotBody["keyPurpose"] != "sign" || gotBody["deviceHint"] != "laptop-7" {
 		t.Errorf("body = %v", gotBody)
+	}
+	if _, present := gotBody["policy"]; present {
+		t.Errorf("challenge body carried a policy; policies bind to the API key: %v", gotBody)
 	}
 
 	if _, err := c.IssueChallenge(context.Background(), ""); err != nil {
@@ -157,7 +160,6 @@ func TestClient_422CodeMapping(t *testing.T) {
 		code     string
 		sentinel error
 	}{
-		{"policy_downgrade", ErrPolicyDowngrade},
 		{"admission_refused", ErrAdmissionRefused},
 		{"unknown_policy", ErrUnknownPolicy},
 		{"", ErrUnknownPolicy},
@@ -218,8 +220,8 @@ func TestRelayEnrollWithChallenge_QueryAndEcho(t *testing.T) {
 	}
 }
 
-// A device whose TPM class can never satisfy the challenge's policy is refused
-// before it gets an AK, with the class in the message.
+// A device whose TPM class can never satisfy the identity policy bound to the
+// key is refused before it gets an AK, with the class in the message.
 func TestRelayEnrollWithChallenge_AdmissionRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
