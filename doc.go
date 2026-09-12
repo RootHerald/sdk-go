@@ -14,7 +14,7 @@
 //	chal, _ := rh.IssueChallenge(ctx, "" /* optional deviceHint */)
 //	// relay chal.Challenge to the client verbatim; it quotes over the nonce
 //	// inside it and returns `evidence`
-//	res, err := rh.Verify(ctx, evidence, rootherald.AttestOptions{ChallengeID: chal.ChallengeID})
+//	res, err := rh.Verify(ctx, evidence, rootherald.AttestOptions{Nonce: chal.Nonce})
 //	if err != nil || res.Verdict != rootherald.VerdictAllow {
 //	    http.Error(w, "attestation rejected", http.StatusUnauthorized)
 //	    return
@@ -27,7 +27,7 @@
 //	chal, _ := rh.IssueChallengeWithOptions(ctx, rootherald.ChallengeOptions{
 //	    Ask: []rootherald.Ask{rootherald.AskIdentity, rootherald.AskKey},
 //	})
-//	res, _ := rh.Verify(ctx, evidence, rootherald.AttestOptions{ChallengeID: chal.ChallengeID})
+//	res, _ := rh.Verify(ctx, evidence, rootherald.AttestOptions{Nonce: chal.Nonce})
 //	if res.Verdict == rootherald.VerdictAllow && res.Key != nil {
 //	    store(userID, res.Key.KeyID, res.Key.JWK)
 //	}
@@ -44,5 +44,11 @@
 //	er, _ := rh.RelayEnroll(ctx, enrollRequestBlob) // POST /api/v1/attest/enroll
 //	// hand er.Challenge to the client's EnrollComplete, then relay the result
 //	act, _ := rh.RelayActivate(ctx, activationResponse) // POST /api/v1/attest/activate
-//	_ = act.DeviceID
+//	_ = act.DeviceID // this tenant's alias for the device; never relayed to it
+//
+// A mobile user reaches the same verify through the RootHerald bridge: the
+// page renders BuildMobileAttestLink(bridgeBaseURL, chal.Challenge), the
+// companion app posts its evidence to the bridge, and the bridge forwards it
+// to the backend's registered appVerifyUrl, where VerifyMobileEvidence brokers
+// Verify under the nonce in the body.
 package rootherald

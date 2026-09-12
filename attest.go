@@ -31,7 +31,7 @@ const secretKeyPrefix = "rh_sk_"
 //	422 -> ErrAdmissionRefused   (error code admission_refused: the device's TPM
 //	                              class can never satisfy the identity policy
 //	                              bound to the key)
-//	409 -> ErrChallenge          (challenge unknown/expired/already used)
+//	409 -> ErrChallenge          (nonce unknown/expired/already used)
 //	400 -> ErrInvalidEvidence    (evidence malformed/unparseable)
 //	429 -> ErrQuotaExceeded      (rate/quota limit hit)
 //
@@ -108,16 +108,15 @@ type ChallengeOptions struct {
 // Challenge is minted by IssueChallenge. Relay the Challenge string to the
 // dumb client verbatim; the client parses it to learn the nonce and the ask,
 // quotes over the nonce, and returns an opaque evidence blob, which the server
-// submits with Verify using ChallengeID.
+// submits with Verify using Nonce.
 type Challenge struct {
-	ChallengeID string `json:"challengeId"`
+	// Nonce is the backend's handle for this challenge: 32 random bytes,
+	// base64url without padding. The server finds the challenge by it at
+	// Verify. It is the second segment of Challenge.
+	Nonce string `json:"nonce"`
 	// Challenge is the string to relay to the client:
-	// "rhc1.<base64url nonce>.<base64url ask-json>". Empty when the server
-	// predates the ask model; relay Nonce in that case.
+	// "rhc1.<base64url nonce>.<base64url ask-json>".
 	Challenge string `json:"challenge"`
-	// Nonce is the base64 nonce the client quotes over, also carried inside
-	// Challenge.
-	Nonce     string `json:"nonce"`
 	ExpiresAt string `json:"expiresAt"`
 }
 
@@ -156,11 +155,11 @@ type CertifiedKey struct {
 // through verbatim — it is never interpreted client-side.
 type Evidence = json.RawMessage
 
-// AttestOptions configures a single Attest call.
+// AttestOptions configures a single Verify call.
 type AttestOptions struct {
-	// ChallengeID is the single-use challenge id from IssueChallenge. Required.
+	// Nonce is the single-use challenge handle from IssueChallenge. Required.
 	// The evidence is appraised under the policy pinned on that challenge.
-	ChallengeID string
+	Nonce string
 	// RequestedDisclosureClass optionally requests how much device detail the
 	// verdict should disclose: "verdict" | "pseudonymous" | "derived" | "full".
 	// Empty omits the request and lets the server apply its default.
@@ -279,8 +278,7 @@ func isLoopbackHost(host string) bool {
 // POST {baseURL}/api/v1/attest/challenge. deviceHint is optional and may
 // be "" to omit it. Relay the returned Challenge string to the client; the
 // client quotes over the nonce inside it, then submit the resulting evidence
-// with Verify using ChallengeID. Use IssueChallengeWithOptions to change the
-// ask.
+// with Verify using Nonce. Use IssueChallengeWithOptions to change the ask.
 func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challenge, error) {
 	return c.IssueChallengeWithOptions(ctx, ChallengeOptions{DeviceHint: deviceHint})
 }
@@ -288,7 +286,7 @@ func (c *Client) IssueChallenge(ctx context.Context, deviceHint string) (Challen
 // IssueChallengeWithOptions mints a challenge carrying the given ask via
 // POST {baseURL}/api/v1/attest/challenge. Relay the returned Challenge string
 // to the client verbatim; it parses the ask from it and produces matching
-// evidence, which the server submits with Verify using ChallengeID.
+// evidence, which the server submits with Verify using Nonce.
 //
 // The policy the challenge will be appraised under is resolved from the API
 // key and pinned on the challenge at mint. The SDK never sends a policy field;
@@ -310,8 +308,8 @@ func (c *Client) IssueChallengeWithOptions(ctx context.Context, opts ChallengeOp
 	if err := c.post(ctx, "/api/v1/attest/challenge", body, &out); err != nil {
 		return Challenge{}, err
 	}
-	if out.ChallengeID == "" || out.Nonce == "" || out.ExpiresAt == "" {
-		return Challenge{}, fmt.Errorf("%w: challenge response missing challengeId/nonce/expiresAt", ErrAttestHTTP)
+	if out.Nonce == "" || out.Challenge == "" || out.ExpiresAt == "" {
+		return Challenge{}, fmt.Errorf("%w: challenge response missing nonce/challenge/expiresAt", ErrAttestHTTP)
 	}
 	return out, nil
 }
@@ -331,6 +329,11 @@ type verifyResponseBody struct {
 // is computed by RootHerald and returned here, to the customer's backend — it
 // never travels through the client, which holds no key and gets no verdict.
 //
+// The server finds the challenge by the nonce and the device by the proof
+// inside the evidence; nothing in the request names a device. A proof from a
+// device that is not enrolled is a failing verdict with EnrollmentRequired
+// set, not an error.
+//
 // The evidence is appraised under the policy pinned on the challenge at mint,
 // which the server resolved from the API key. The SDK never sends a policy
 // field; a hand-built body that carries one is refused with 400
@@ -341,12 +344,12 @@ type verifyResponseBody struct {
 // a non-nil error (see the package sentinels). evidence is passed through
 // verbatim.
 func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
-	if opts.ChallengeID == "" {
-		return AttestResult{}, fmt.Errorf("%w: Verify requires ChallengeID (from IssueChallenge)", ErrChallenge)
+	if opts.Nonce == "" {
+		return AttestResult{}, fmt.Errorf("%w: Verify requires Nonce (from IssueChallenge)", ErrChallenge)
 	}
 	body := map[string]any{
-		"challengeId": opts.ChallengeID,
-		"evidence":    json.RawMessage(evidence),
+		"nonce":    opts.Nonce,
+		"evidence": json.RawMessage(evidence),
 	}
 	if opts.RequestedDisclosureClass != "" {
 		body["requestedDisclosureClass"] = opts.RequestedDisclosureClass

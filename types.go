@@ -19,6 +19,8 @@ const (
 // supplied and omits them otherwise — hence the pointer/omitempty fields, which
 // stay nil/absent when the server did not return them.
 type DeviceVerdict struct {
+	// UEID is this tenant's alias for the device, absent when the device is
+	// not enrolled. It is for the backend only and must not reach the device.
 	UEID            string `json:"ueid,omitempty"`
 	EARStatus       string `json:"earStatus,omitempty"`
 	Verdict         string `json:"verdict,omitempty"`
