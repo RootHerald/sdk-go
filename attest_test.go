@@ -28,7 +28,7 @@ func TestClient_IssueChallenge(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"challengeId": "ch_1", "nonce": "n_1", "expiresAt": "2030-01-01T00:00:00Z",
+			"nonce": "n_1", "challenge": "rhc1.n_1.e30", "expiresAt": "2030-01-01T00:00:00Z",
 		})
 	}))
 	defer srv.Close()
@@ -38,7 +38,7 @@ func TestClient_IssueChallenge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueChallenge: %v", err)
 	}
-	if chal.ChallengeID != "ch_1" || chal.Nonce != "n_1" {
+	if chal.Nonce != "n_1" || chal.Challenge != "rhc1.n_1.e30" || chal.ExpiresAt != "2030-01-01T00:00:00Z" {
 		t.Errorf("challenge = %+v", chal)
 	}
 	if gotAuth != "Bearer rh_sk_test_key" {
@@ -49,13 +49,48 @@ func TestClient_IssueChallenge(t *testing.T) {
 	}
 }
 
+// The nonce is the backend's handle for the challenge: a response without it,
+// or without the challenge string to relay, is malformed.
+func TestClient_IssueChallengeRejectsIncompleteResponse(t *testing.T) {
+	bodies := []map[string]string{
+		{"challenge": "rhc1.n_1.e30", "expiresAt": "2030-01-01T00:00:00Z"},
+		{"nonce": "n_1", "expiresAt": "2030-01-01T00:00:00Z"},
+		{"nonce": "n_1", "challenge": "rhc1.n_1.e30"},
+	}
+	for i, body := range bodies {
+		body := body
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(body)
+		}))
+		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+		_, err := c.IssueChallenge(context.Background(), "")
+		srv.Close()
+		if !errors.Is(err, ErrAttestHTTP) {
+			t.Errorf("case %d: err = %v, want ErrAttestHTTP", i, err)
+		}
+	}
+}
+
+// Verify needs the nonce to name the challenge; without one nothing is sent.
+func TestClient_VerifyRequiresNonce(t *testing.T) {
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
+	_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{})
+	if !errors.Is(err, ErrChallenge) {
+		t.Errorf("err = %v, want ErrChallenge", err)
+	}
+}
+
 func TestClient_AttestPassVerdict(t *testing.T) {
 	var gotDisclosure any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["challengeId"] != "ch_1" {
-			t.Errorf("challengeId = %v", body["challengeId"])
+		if body["nonce"] != "n_1" {
+			t.Errorf("nonce = %v", body["nonce"])
+		}
+		if _, present := body["challengeId"]; present {
+			t.Errorf("verify body carried a challengeId; the nonce is the handle: %v", body)
 		}
 		if _, present := body["policy"]; present {
 			t.Errorf("verify body carried a policy; policies bind to the API key: %v", body)
@@ -83,7 +118,7 @@ func TestClient_AttestPassVerdict(t *testing.T) {
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Verify(context.Background(), json.RawMessage(`{"quote":"..."}`),
-		AttestOptions{ChallengeID: "ch_1", RequestedDisclosureClass: "pseudonymous"})
+		AttestOptions{Nonce: "n_1", RequestedDisclosureClass: "pseudonymous"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
@@ -123,7 +158,7 @@ func TestClient_AttestEnrollmentRequired(t *testing.T) {
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
-		AttestOptions{ChallengeID: "ch_1"})
+		AttestOptions{Nonce: "n_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
@@ -158,7 +193,7 @@ func TestClient_AttestParsesCohortFields(t *testing.T) {
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
-		AttestOptions{ChallengeID: "ch_1"})
+		AttestOptions{Nonce: "n_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
@@ -199,7 +234,7 @@ func TestClient_AttestNoCohortFields(t *testing.T) {
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
-		AttestOptions{ChallengeID: "ch_1"})
+		AttestOptions{Nonce: "n_1"})
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
@@ -224,7 +259,7 @@ func TestClient_AttestFailVerdictNotError(t *testing.T) {
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 	res, err := c.Verify(context.Background(), json.RawMessage(`{}`),
-		AttestOptions{ChallengeID: "ch_1"})
+		AttestOptions{Nonce: "n_1"})
 	if err != nil {
 		t.Fatalf("Attest returned error for fail verdict: %v", err)
 	}
@@ -252,7 +287,7 @@ func TestClient_ErrorMapping(t *testing.T) {
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 		_, err := c.Verify(context.Background(), json.RawMessage(`{}`),
-			AttestOptions{ChallengeID: "ch_1"})
+			AttestOptions{Nonce: "n_1"})
 		if !errors.Is(err, tc.sentinel) {
 			t.Errorf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
 		}

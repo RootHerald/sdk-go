@@ -20,10 +20,9 @@ func TestClient_IssueChallengeWithOptions(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"challengeId": "ch_1",
-			"challenge":   "rhc1.bm9uY2U.eyJhc2siOlsiaWRlbnRpdHkiLCJrZXkiXX0",
-			"nonce":       "bm9uY2U=",
-			"expiresAt":   "2030-01-01T00:00:00Z",
+			"nonce":     "bm9uY2U",
+			"challenge": "rhc1.bm9uY2U.eyJhc2siOlsiaWRlbnRpdHkiLCJrZXkiXX0",
+			"expiresAt": "2030-01-01T00:00:00Z",
 		})
 	}))
 	defer srv.Close()
@@ -37,7 +36,7 @@ func TestClient_IssueChallengeWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueChallengeWithOptions: %v", err)
 	}
-	if chal.Challenge != "rhc1.bm9uY2U.eyJhc2siOlsiaWRlbnRpdHkiLCJrZXkiXX0" || chal.Nonce != "bm9uY2U=" {
+	if chal.Challenge != "rhc1.bm9uY2U.eyJhc2siOlsiaWRlbnRpdHkiLCJrZXkiXX0" || chal.Nonce != "bm9uY2U" {
 		t.Errorf("challenge = %+v", chal)
 	}
 	ask, _ := gotBody["ask"].([]any)
@@ -82,7 +81,7 @@ func TestClient_VerifyParsesCertifiedKey(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
+	res, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestClient_VerifyKeyAbsentOrDroppedOnFail(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(body)
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-		res, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
+		res, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
 		srv.Close()
 		if err != nil {
 			t.Fatalf("case %d: Verify: %v", i, err)
@@ -147,7 +146,7 @@ func TestClient_VerifyRejectsIncompleteKey(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
+	_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
 	if !errors.Is(err, ErrAttestHTTP) {
 		t.Errorf("err = %v, want ErrAttestHTTP", err)
 	}
@@ -171,7 +170,7 @@ func TestClient_422CodeMapping(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": tc.code, "message": "detail: " + tc.code})
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-		_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{ChallengeID: "ch_1"})
+		_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
 		srv.Close()
 		if !errors.Is(err, tc.sentinel) {
 			t.Errorf("code %q: err = %v, want %v", tc.code, err, tc.sentinel)
@@ -183,46 +182,9 @@ func TestClient_422CodeMapping(t *testing.T) {
 	}
 }
 
-// RelayEnrollWithChallenge scopes admission to a challenge via the query
-// string; RelayEnroll sends none. The echoed challengeId is surfaced.
-func TestRelayEnrollWithChallenge_QueryAndEcho(t *testing.T) {
-	var gotQuery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"deviceId":        "dev-1",
-			"challengeId":     r.URL.Query().Get("challengeId"),
-			"credentialBlob":  "cred",
-			"encryptedSecret": "sec",
-		})
-	}))
-	defer srv.Close()
-
-	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	res, err := c.RelayEnrollWithChallenge(context.Background(), validEnrollBlob(), "ch 1/&x")
-	if err != nil {
-		t.Fatalf("RelayEnrollWithChallenge: %v", err)
-	}
-	if gotQuery != "challengeId=ch+1%2F%26x" {
-		t.Errorf("query = %q", gotQuery)
-	}
-	if res.Challenge == nil || res.Challenge.ChallengeID != "ch 1/&x" {
-		t.Errorf("challenge = %+v", res.Challenge)
-	}
-
-	if _, err := c.RelayEnroll(context.Background(), validEnrollBlob()); err != nil {
-		t.Fatalf("RelayEnroll: %v", err)
-	}
-	if gotQuery != "" {
-		t.Errorf("RelayEnroll sent query %q; want none", gotQuery)
-	}
-}
-
 // A device whose TPM class can never satisfy the identity policy bound to the
 // key is refused before it gets an AK, with the class in the message.
-func TestRelayEnrollWithChallenge_AdmissionRefused(t *testing.T) {
+func TestRelayEnroll_AdmissionRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
@@ -234,7 +196,7 @@ func TestRelayEnrollWithChallenge_AdmissionRefused(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	_, err := c.RelayEnrollWithChallenge(context.Background(), validEnrollBlob(), "ch_1")
+	_, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 	if !errors.Is(err, ErrAdmissionRefused) {
 		t.Fatalf("err = %v, want ErrAdmissionRefused", err)
 	}
