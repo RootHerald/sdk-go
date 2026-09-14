@@ -68,7 +68,7 @@ func main() {
 		// 2) the dumb client posted its opaque evidence blob as the body.
 		evidence, _ := io.ReadAll(req.Body)
 		res, err := attest.Verify(req.Context(), evidence, rh.AttestOptions{
-			ChallengeID: chal.ChallengeID,
+			Nonce: chal.Nonce,
 		})
 		if err != nil {
 			http.Error(w, "attestation error", http.StatusBadGateway)
