@@ -219,9 +219,10 @@ func TestRelayEnroll_ErrorMapping(t *testing.T) {
 	}{
 		{http.StatusUnauthorized, ErrInvalidSecretKey},
 		{http.StatusBadRequest, ErrInvalidEvidence},
-		{http.StatusTooManyRequests, ErrQuotaExceeded},
+		{http.StatusTooManyRequests, ErrRateLimited},
 	}
 	for _, tc := range cases {
+		tc := tc
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(tc.status)
@@ -334,12 +335,15 @@ func TestRelayActivate_ValidatesInput(t *testing.T) {
 }
 
 // An unknown, spent or foreign enrollment and a wrong proof are refused alike
-// with a 401.
+// with one 401 activation_refused, which is not an invalid key: the key was
+// accepted before the action ran.
 func TestRelayActivate_ErrorMapping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid credential activation response"})
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "activation_refused", "message": "Invalid credential activation response",
+		})
 	}))
 	defer srv.Close()
 
@@ -347,8 +351,44 @@ func TestRelayActivate_ErrorMapping(t *testing.T) {
 	_, err := c.RelayActivate(context.Background(), EnrollActivationResponse{
 		EnrollmentID: "enr-1", DecryptedSecret: "s",
 	})
-	if !errors.Is(err, ErrInvalidSecretKey) {
-		t.Errorf("err = %v, want ErrInvalidSecretKey", err)
+	if !errors.Is(err, ErrActivationRefused) || errors.Is(err, ErrInvalidSecretKey) {
+		t.Errorf("err = %v, want ErrActivationRefused", err)
+	}
+}
+
+// The bridge's enroll envelope carries the nonce twice; a mismatch is refused
+// before any request is made.
+func TestRelayMobileEnrollment_NonceEquality(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	ios := EnrollRequestBlob{Platform: PlatformIOS, IOSKeyID: "k", IOSAttestationObject: "o", Nonce: "n_1"}
+
+	if _, err := c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_1", Enrollment: ios}); err != nil {
+		t.Fatalf("matching nonces: %v", err)
+	}
+	if gotBody["nonce"] != "n_1" || gotBody["platform"] != "ios" {
+		t.Errorf("relayed body = %v", gotBody)
+	}
+	gotBody = nil
+	_, err := c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_2", Enrollment: ios})
+	if !errors.Is(err, ErrInvalidEnrollBlob) || gotBody != nil {
+		t.Errorf("mismatched nonces: err = %v, request sent = %v", err, gotBody != nil)
+	}
+	_, err = c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Enrollment: ios})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("missing envelope nonce: err = %v, want ErrInvalidArgument", err)
+	}
+	tpm := validEnrollBlob()
+	_, err = c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_1", Enrollment: tpm})
+	if !errors.Is(err, ErrInvalidEnrollBlob) {
+		t.Errorf("non-iOS enrollment: err = %v, want ErrInvalidEnrollBlob", err)
 	}
 }
 
@@ -371,7 +411,7 @@ func TestVerify_AliasParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attest alias: %v", err)
 	}
-	if v.Verdict != VerdictAllow || a.Verdict != VerdictAllow {
-		t.Errorf("Verify=%s Attest=%s, want allow", v.Verdict, a.Verdict)
+	if v.Verdict != VerdictPass || a.Verdict != VerdictPass {
+		t.Errorf("Verify=%s Attest=%s, want pass", v.Verdict, a.Verdict)
 	}
 }

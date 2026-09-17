@@ -15,7 +15,7 @@
 //	// relay chal.Challenge to the client verbatim; it quotes over the nonce
 //	// inside it and returns `evidence`
 //	res, err := rh.Verify(ctx, evidence, rootherald.AttestOptions{Nonce: chal.Nonce})
-//	if err != nil || res.Verdict != rootherald.VerdictAllow {
+//	if err != nil || res.Verdict != rootherald.VerdictPass {
 //	    http.Error(w, "attestation rejected", http.StatusUnauthorized)
 //	    return
 //	}
@@ -28,7 +28,7 @@
 //	    Ask: []rootherald.Ask{rootherald.AskIdentity, rootherald.AskKey},
 //	})
 //	res, _ := rh.Verify(ctx, evidence, rootherald.AttestOptions{Nonce: chal.Nonce})
-//	if res.Verdict == rootherald.VerdictAllow && res.Key != nil {
+//	if res.Verdict == rootherald.VerdictPass && res.Key != nil {
 //	    store(userID, res.Key.KeyID, res.Key.JWK)
 //	}
 //	// later, on a request the device signed with that key — no RootHerald call:

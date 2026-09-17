@@ -4,13 +4,19 @@ import (
 	"strings"
 )
 
-// Verdict is the result of an attestation check.
+// Verdict is the result of an attestation check: the server's own
+// verdict.device.verdict token, the same vocabulary in every RootHerald SDK.
 type Verdict string
 
 const (
-	VerdictAllow  Verdict = "allow"
-	VerdictDeny   Verdict = "deny"
-	VerdictReview Verdict = "review"
+	// VerdictPass: the device satisfied the policy.
+	VerdictPass Verdict = "pass"
+	// VerdictWarn: the device passed with reduced assurance; the policy says
+	// whether to proceed.
+	VerdictWarn Verdict = "warn"
+	// VerdictFail: the device did not satisfy the policy, or is not enrolled
+	// (see AttestResult.EnrollmentRequired).
+	VerdictFail Verdict = "fail"
 )
 
 // DeviceVerdict is the typed view of the Background-Check verify response's
@@ -40,19 +46,14 @@ type DeviceVerdict struct {
 	NovelProfile *bool `json:"novelProfile,omitempty"`
 }
 
-// mapVerdict translates the platform's raw verdict vocabulary
-// ("pass"/"fail"/"warn", as emitted by the verdict.device.verdict token) into
-// the SDK Verdict enum. Unknown or empty values map to VerdictReview so an
-// unrecognised token is never silently allowed.
-func mapVerdict(raw string) Verdict {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "pass", "allow", "affirming":
-		return VerdictAllow
-	case "fail", "deny", "contraindicated":
-		return VerdictDeny
-	case "warn", "warning", "review":
-		return VerdictReview
+// parseVerdict reads the verdict.device.verdict token. Anything outside the
+// three values the server emits is refused (ok == false) rather than mapped,
+// so a token the SDK does not understand is never silently passed.
+func parseVerdict(raw string) (Verdict, bool) {
+	switch v := Verdict(strings.ToLower(strings.TrimSpace(raw))); v {
+	case VerdictPass, VerdictWarn, VerdictFail:
+		return v, true
 	default:
-		return VerdictReview
+		return "", false
 	}
 }
