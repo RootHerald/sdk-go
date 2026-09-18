@@ -4,6 +4,32 @@
 
 ### Breaking
 
+- `Verdict` is the server's own token: `VerdictPass` / `VerdictWarn` /
+  `VerdictFail` (`"pass"` / `"warn"` / `"fail"`) replace `VerdictAllow` /
+  `VerdictReview` / `VerdictDeny`, the same vocabulary as every other
+  RootHerald SDK. A response carrying any other token is `ErrAttestHTTP`
+  instead of `VerdictReview`.
+- `AttestResult.Key` is passed through as the server sent it; it is no longer
+  nilled on a non-passing verdict. The server withholds it when it must.
+- An empty `AttestOptions.Nonce` (and an empty nonce on
+  `VerifyMobileEvidence`) is `ErrInvalidArgument`, not `ErrChallenge`; no
+  request is made.
+- A 401 carrying `activation_refused` is `ErrActivationRefused`, not
+  `ErrInvalidSecretKey`. A 429 without `quota_exceeded` or an
+  `X-RootHerald-Quota` header is `ErrRateLimited`, with
+  `APIError.RetryAfterSeconds`, not `ErrQuotaExceeded`. A 422 whose code is
+  neither `unknown_policy` nor `admission_refused` (`posture_not_bound`) is
+  `ErrAttestHTTP` with the code preserved, not `ErrUnknownPolicy`.
+- The default `http.Client` timeout is 30 s (`DefaultTimeout`), was 10 s.
+
+### Additive
+
+- `RelayMobileEnrollment(ctx, MobileAppEnrollRequest)` relays a bridge
+  `{nonce, enrollment}` body after checking the envelope nonce equals the
+  one inside the blob.
+- `CertifiedKey.AuthPolicy` is documented as hex, which is what the server
+  sends.
+
 - Wire 7.0: nothing a client sends locates a row. `Challenge` is
   `{Nonce, Challenge, ExpiresAt}`; `ChallengeID` is gone and `Nonce` is the
   backend's handle. `AttestOptions.ChallengeID` is `AttestOptions.Nonce` and

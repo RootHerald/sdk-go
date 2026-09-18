@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,35 +26,63 @@ const secretKeyPrefix = "rh_sk_"
 // Background-Check sentinel errors. Use errors.Is to switch on them. They mirror
 // the HTTP status mapping of the @rootherald/node SDK:
 //
-//	401 -> ErrInvalidSecretKey   (bad/absent secret key)
-//	422 -> ErrUnknownPolicy      (a policy bound to the API key no longer
-//	                              exists; nothing is substituted)
+//	401 -> ErrActivationRefused  (error code activation_refused: the
+//	                              enrollmentId is unknown, spent or foreign, or
+//	                              the proof did not match; the key was accepted)
+//	401 -> ErrInvalidSecretKey   (any other 401: bad/absent secret key)
+//	422 -> ErrUnknownPolicy      (error code unknown_policy, or none: a policy
+//	                              bound to the API key no longer exists;
+//	                              nothing is substituted)
 //	422 -> ErrAdmissionRefused   (error code admission_refused: the device's TPM
 //	                              class can never satisfy the identity policy
 //	                              bound to the key)
 //	409 -> ErrChallenge          (nonce unknown/expired/already used)
 //	400 -> ErrInvalidEvidence    (evidence malformed/unparseable)
-//	429 -> ErrQuotaExceeded      (rate/quota limit hit)
+//	429 -> ErrQuotaExceeded      (error code quota_exceeded or an
+//	                              X-RootHerald-Quota header: the metered quota)
+//	429 -> ErrRateLimited        (any other 429: the request-rate limiter;
+//	                              APIError.RetryAfterSeconds says how long)
 //
-// A 422 is told apart by the server's error code; one without a recognised
-// code is ErrUnknownPolicy. The refused TPM class travels in APIError.Message.
+// Where one status carries two refusals the server's error code (or a header)
+// tells them apart. A status or code no sentinel covers — including 422
+// posture_not_bound and 402 plan_lapsed — is ErrAttestHTTP with the code
+// preserved in APIError.Code. The refused TPM class travels in APIError.Message.
 //
-// An un-enrolled or failing device is NOT an error: Attest returns a normal
-// verdict carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems
+// ErrInvalidArgument flags input the SDK refused locally, before any network
+// call (an empty Nonce, for example).
+//
+// An un-enrolled or failing device is NOT an error: Verify returns a normal
+// verdict carrying VerdictFail/VerdictWarn. Only protocol/auth/quota problems
 // surface as one of these errors.
 var (
-	ErrInvalidSecretKey = errors.New("rootherald: invalid secret key")
-	ErrInvalidBaseURL   = errors.New("rootherald: invalid base URL")
-	ErrUnknownPolicy    = errors.New("rootherald: unknown policy")
-	ErrAdmissionRefused = errors.New("rootherald: enrollment refused for this device class")
-	ErrChallenge        = errors.New("rootherald: challenge invalid or expired")
-	ErrInvalidEvidence  = errors.New("rootherald: invalid evidence")
-	ErrQuotaExceeded    = errors.New("rootherald: quota exceeded")
-	ErrAttestHTTP       = errors.New("rootherald: attestation http error")
+	ErrInvalidSecretKey  = errors.New("rootherald: invalid secret key")
+	ErrActivationRefused = errors.New("rootherald: activation refused")
+	ErrInvalidBaseURL    = errors.New("rootherald: invalid base URL")
+	ErrInvalidArgument   = errors.New("rootherald: invalid argument")
+	ErrUnknownPolicy     = errors.New("rootherald: unknown policy")
+	ErrAdmissionRefused  = errors.New("rootherald: enrollment refused for this device class")
+	ErrChallenge         = errors.New("rootherald: challenge invalid or expired")
+	ErrInvalidEvidence   = errors.New("rootherald: invalid evidence")
+	ErrQuotaExceeded     = errors.New("rootherald: quota exceeded")
+	ErrRateLimited       = errors.New("rootherald: rate limited")
+	ErrAttestHTTP        = errors.New("rootherald: attestation http error")
 )
 
-// Server error code that refines a 422 beyond "unknown policy".
-const codeAdmissionRefused = "admission_refused"
+// Server error codes that tell apart the refusals sharing one status.
+const (
+	codeActivationRefused = "activation_refused"
+	codeAdmissionRefused  = "admission_refused"
+	codeUnknownPolicy     = "unknown_policy"
+	codeQuotaExceeded     = "quota_exceeded"
+)
+
+// quotaHeader marks a 429 as the metered quota, whatever the body says.
+const quotaHeader = "X-RootHerald-Quota"
+
+// DefaultTimeout is the per-request HTTP timeout of the http.Client NewClient
+// builds when WithHTTPClient is not given. It is the same in every RootHerald
+// server SDK.
+const DefaultTimeout = 30 * time.Second
 
 // APIError carries the HTTP status and server-provided error detail for a
 // failed Background-Check call. It wraps one of the sentinel errors above so
@@ -62,7 +91,11 @@ type APIError struct {
 	StatusCode int
 	Code       string // server "error" code, if any
 	Message    string // server "message"/"error_description", if any
-	sentinel   error
+	// RetryAfterSeconds is how long a rate-limited (ErrRateLimited) call should
+	// wait before retrying: the Retry-After header, else the body's
+	// retryAfterSeconds. 0 when the server gave neither.
+	RetryAfterSeconds int
+	sentinel          error
 }
 
 func (e *APIError) Error() string {
@@ -144,8 +177,8 @@ type CertifiedKey struct {
 	JWK JWK `json:"jwk"`
 	// Purpose echoes the challenge's KeyPurpose; "sign" today.
 	Purpose string `json:"purpose"`
-	// AuthPolicy is the base64 authPolicy digest from the key's public area,
-	// when the key was created with one.
+	// AuthPolicy is the hex authPolicy digest from the key's public area, when
+	// the key was created with one.
 	AuthPolicy string `json:"authPolicy,omitempty"`
 	// CertifiedAt is when the certification was appraised.
 	CertifiedAt time.Time `json:"certifiedAt"`
@@ -166,8 +199,8 @@ type AttestOptions struct {
 	RequestedDisclosureClass string
 }
 
-// AttestResult is the verdict returned by Attest. Verdict is mapped to the SDK
-// enum from the raw "pass"/"fail"/"warn" the server emits.
+// AttestResult is the verdict returned by Verify. Verdict is the server's
+// "pass"/"warn"/"fail" token from verdict.device.verdict.
 type AttestResult struct {
 	Verdict Verdict
 	// Device is the typed view of the server's verdict.device object, including
@@ -181,9 +214,9 @@ type AttestResult struct {
 	// enroll-on-miss signal: true when the device must enroll before a verdict
 	// can be issued.
 	EnrollmentRequired bool
-	// Key is the signing key the appraisal certified (top-level "key"). Present
-	// only when the challenge asked for AskKey and the verdict passed; nil
-	// otherwise, whatever the evidence carried.
+	// Key is the signing key the appraisal certified (top-level "key"), passed
+	// through as the server sent it. The server sends one only when the
+	// challenge asked for AskKey and the verdict passed; nil otherwise.
 	Key *CertifiedKey
 	// Raw is the full decoded verdict object as returned by the server, for
 	// callers that need fields the typed surface does not expose yet.
@@ -212,7 +245,7 @@ func WithBaseURL(baseURL string) ClientOption {
 }
 
 // WithHTTPClient swaps the underlying *http.Client (timeouts, proxies,
-// tests).
+// tests). The caller's client is used as given, including its Timeout.
 func WithHTTPClient(h *http.Client) ClientOption {
 	return func(c *Client) { c.http = h }
 }
@@ -229,7 +262,7 @@ func NewClient(secretKey string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		secretKey: secretKey,
 		baseURL:   DefaultBaseURL,
-		http:      &http.Client{Timeout: 10 * time.Second},
+		http:      &http.Client{Timeout: DefaultTimeout},
 	}
 	for _, o := range opts {
 		o(c)
@@ -340,12 +373,13 @@ type verifyResponseBody struct {
 // policy_bound_to_key.
 //
 // An un-enrolled / failing device is NOT an error — it returns a normal verdict
-// carrying VerdictDeny/VerdictReview. Only protocol/auth/quota problems return
-// a non-nil error (see the package sentinels). evidence is passed through
+// carrying VerdictFail/VerdictWarn. Only protocol/auth/quota problems return
+// a non-nil error (see the package sentinels); an empty Nonce is
+// ErrInvalidArgument before any request is made. evidence is passed through
 // verbatim.
 func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptions) (AttestResult, error) {
 	if opts.Nonce == "" {
-		return AttestResult{}, fmt.Errorf("%w: Verify requires Nonce (from IssueChallenge)", ErrChallenge)
+		return AttestResult{}, fmt.Errorf("%w: Verify requires Nonce (from IssueChallenge)", ErrInvalidArgument)
 	}
 	body := map[string]any{
 		"nonce":    opts.Nonce,
@@ -363,22 +397,19 @@ func (c *Client) Verify(ctx context.Context, evidence Evidence, opts AttestOptio
 		return AttestResult{}, fmt.Errorf("%w: verify response missing verdict", ErrAttestHTTP)
 	}
 	// The pass/fail token lives at verdict.device.verdict, not top-level
-	// verdict.verdict; read it from the parsed device so a passing device is not
-	// silently downgraded to review/deny.
+	// verdict.verdict.
 	device := parseDeviceVerdict(resp.Verdict["device"])
 	var rawVerdict string
 	if device != nil {
 		rawVerdict = device.Verdict
 	}
-	verdict := mapVerdict(rawVerdict)
+	verdict, ok := parseVerdict(rawVerdict)
+	if !ok {
+		return AttestResult{}, fmt.Errorf("%w: verify response verdict.device.verdict is not pass/warn/fail (got %q)", ErrAttestHTTP, rawVerdict)
+	}
 	key := resp.Key
 	if key != nil && (key.KeyID == "" || key.JWK.Kty == "" || key.JWK.X == "" || key.JWK.Y == "") {
 		return AttestResult{}, fmt.Errorf("%w: verify response key missing keyId/jwk", ErrAttestHTTP)
-	}
-	if verdict != VerdictAllow {
-		// The contract certifies nothing on a failing verdict; do not let a
-		// stray key on the wire outlive the verdict it came with.
-		key = nil
 	}
 	return AttestResult{
 		Verdict:            verdict,
@@ -451,13 +482,16 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 }
 
 // toAPIError maps a non-2xx response to a typed *APIError wrapping the matching
-// sentinel, mirroring the @rootherald/node status mapping.
+// sentinel, mirroring the @rootherald/node status mapping. Where one status
+// carries two refusals the body's error code (or a header) tells them apart; a
+// code no sentinel covers stays ErrAttestHTTP with the code preserved.
 func toAPIError(resp *http.Response) error {
 	rawBody, _ := io.ReadAll(resp.Body)
 	var parsed struct {
-		Error            string `json:"error"`
-		Message          string `json:"message"`
-		ErrorDescription string `json:"error_description"`
+		Error             string `json:"error"`
+		Message           string `json:"message"`
+		ErrorDescription  string `json:"error_description"`
+		RetryAfterSeconds int    `json:"retryAfterSeconds"`
 	}
 	_ = json.Unmarshal(rawBody, &parsed)
 	msg := parsed.Message
@@ -465,15 +499,20 @@ func toAPIError(resp *http.Response) error {
 		msg = parsed.ErrorDescription
 	}
 
-	var sentinel error
+	sentinel := ErrAttestHTTP
+	retryAfter := 0
 	switch resp.StatusCode {
 	case http.StatusUnauthorized: // 401
-		sentinel = ErrInvalidSecretKey
+		if parsed.Error == codeActivationRefused {
+			sentinel = ErrActivationRefused
+		} else {
+			sentinel = ErrInvalidSecretKey
+		}
 	case http.StatusUnprocessableEntity: // 422
 		switch parsed.Error {
 		case codeAdmissionRefused:
 			sentinel = ErrAdmissionRefused
-		default:
+		case codeUnknownPolicy, "":
 			sentinel = ErrUnknownPolicy
 		}
 	case http.StatusConflict: // 409
@@ -481,17 +520,24 @@ func toAPIError(resp *http.Response) error {
 	case http.StatusBadRequest: // 400
 		sentinel = ErrInvalidEvidence
 	case http.StatusTooManyRequests: // 429
-		sentinel = ErrQuotaExceeded
-	default:
-		sentinel = ErrAttestHTTP
-		if msg == "" {
-			msg = strings.TrimSpace(string(rawBody))
+		if parsed.Error == codeQuotaExceeded || resp.Header.Get(quotaHeader) != "" {
+			sentinel = ErrQuotaExceeded
+		} else {
+			sentinel = ErrRateLimited
+			retryAfter = parsed.RetryAfterSeconds
+			if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil {
+				retryAfter = secs
+			}
 		}
 	}
+	if sentinel == ErrAttestHTTP && msg == "" {
+		msg = strings.TrimSpace(string(rawBody))
+	}
 	return &APIError{
-		StatusCode: resp.StatusCode,
-		Code:       parsed.Error,
-		Message:    msg,
-		sentinel:   sentinel,
+		StatusCode:        resp.StatusCode,
+		Code:              parsed.Error,
+		Message:           msg,
+		RetryAfterSeconds: retryAfter,
+		sentinel:          sentinel,
 	}
 }

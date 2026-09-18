@@ -74,7 +74,7 @@ func main() {
 			http.Error(w, "attestation error", http.StatusBadGateway)
 			return
 		}
-		if res.Verdict != rh.VerdictAllow || res.Key == nil {
+		if res.Verdict != rh.VerdictPass || res.Key == nil {
 			// An un-enrolled / failing device is a verdict, not an error. A
 			// passing verdict with a key ask always carries the key.
 			http.Error(w, "denied", http.StatusForbidden)

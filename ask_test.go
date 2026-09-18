@@ -102,24 +102,27 @@ func TestClient_VerifyParsesCertifiedKey(t *testing.T) {
 	}
 }
 
-// No key on the wire means Key is nil, and a key beside a non-passing verdict
-// is dropped: the contract certifies nothing on a failing verdict.
-func TestClient_VerifyKeyAbsentOrDroppedOnFail(t *testing.T) {
-	bodies := []map[string]any{
-		{"verdict": map[string]any{"device": map[string]any{"verdict": "pass"}}},
-		{
-			"verdict": map[string]any{"device": map[string]any{"verdict": "fail"}},
-			"key": map[string]any{
-				"keyId": "key_1", "purpose": "sign", "certifiedAt": "2026-09-07T10:00:00Z",
-				"jwk": map[string]string{"kty": "EC", "crv": "P-256", "x": "eA", "y": "eQ"},
-			},
-		},
+// No key on the wire means Key is nil; a key the server did send is passed
+// through whatever the verdict, the same as every other SDK. The server is the
+// one that withholds it on a non-passing verdict.
+func TestClient_VerifyKeyPassesThroughWhateverTheVerdict(t *testing.T) {
+	key := map[string]any{
+		"keyId": "key_1", "purpose": "sign", "certifiedAt": "2026-09-07T10:00:00Z",
+		"jwk": map[string]string{"kty": "EC", "crv": "P-256", "x": "eA", "y": "eQ"},
 	}
-	for i, body := range bodies {
-		body := body
+	cases := []struct {
+		body    map[string]any
+		wantKey bool
+	}{
+		{map[string]any{"verdict": map[string]any{"device": map[string]any{"verdict": "pass"}}}, false},
+		{map[string]any{"verdict": map[string]any{"device": map[string]any{"verdict": "fail"}}, "key": key}, true},
+		{map[string]any{"verdict": map[string]any{"device": map[string]any{"verdict": "warn"}}, "key": key}, true},
+	}
+	for i, tc := range cases {
+		tc := tc
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(body)
+			_ = json.NewEncoder(w).Encode(tc.body)
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 		res, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
@@ -127,8 +130,8 @@ func TestClient_VerifyKeyAbsentOrDroppedOnFail(t *testing.T) {
 		if err != nil {
 			t.Fatalf("case %d: Verify: %v", i, err)
 		}
-		if res.Key != nil {
-			t.Errorf("case %d: Key = %+v, want nil", i, res.Key)
+		if (res.Key != nil) != tc.wantKey {
+			t.Errorf("case %d: Key = %+v, want present=%v", i, res.Key, tc.wantKey)
 		}
 	}
 }

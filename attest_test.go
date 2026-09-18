@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestNewClient_RejectsBadKeys(t *testing.T) {
@@ -76,8 +77,11 @@ func TestClient_IssueChallengeRejectsIncompleteResponse(t *testing.T) {
 func TestClient_VerifyRequiresNonce(t *testing.T) {
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
 	_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{})
-	if !errors.Is(err, ErrChallenge) {
-		t.Errorf("err = %v, want ErrChallenge", err)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("err = %v, want ErrInvalidArgument", err)
+	}
+	if errors.Is(err, ErrChallenge) {
+		t.Errorf("a local argument error must not read as a 409: %v", err)
 	}
 }
 
@@ -122,8 +126,8 @@ func TestClient_AttestPassVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attest: %v", err)
 	}
-	if res.Verdict != VerdictAllow {
-		t.Errorf("verdict = %s, want allow", res.Verdict)
+	if res.Verdict != VerdictPass {
+		t.Errorf("verdict = %s, want pass", res.Verdict)
 	}
 	if res.Device == nil || res.Device.EARStatus != "affirming" || res.Device.AttestationType != "tpm20" {
 		t.Errorf("device = %+v, want earStatus=affirming attestationType=tpm20", res.Device)
@@ -263,27 +267,60 @@ func TestClient_AttestFailVerdictNotError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attest returned error for fail verdict: %v", err)
 	}
-	if res.Verdict != VerdictDeny {
-		t.Errorf("verdict = %s, want deny", res.Verdict)
+	if res.Verdict != VerdictFail {
+		t.Errorf("verdict = %s, want fail", res.Verdict)
+	}
+}
+
+// The verdict vocabulary is the server's; a token outside it is a malformed
+// response, never silently a pass or a fail.
+func TestClient_VerifyRefusesUnknownVerdictToken(t *testing.T) {
+	for _, token := range []any{"allow", "review", "", nil} {
+		token := token
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verdict": map[string]any{"device": map[string]any{"verdict": token}},
+			})
+		}))
+		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+		_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
+		srv.Close()
+		if !errors.Is(err, ErrAttestHTTP) {
+			t.Errorf("token %v: err = %v, want ErrAttestHTTP", token, err)
+		}
 	}
 }
 
 func TestClient_ErrorMapping(t *testing.T) {
 	cases := []struct {
 		status   int
+		code     string
 		sentinel error
 	}{
-		{http.StatusUnauthorized, ErrInvalidSecretKey},
-		{http.StatusUnprocessableEntity, ErrUnknownPolicy},
-		{http.StatusConflict, ErrChallenge},
-		{http.StatusBadRequest, ErrInvalidEvidence},
-		{http.StatusTooManyRequests, ErrQuotaExceeded},
+		{http.StatusUnauthorized, "invalid_secret_key", ErrInvalidSecretKey},
+		{http.StatusUnauthorized, "activation_refused", ErrActivationRefused},
+		{http.StatusUnprocessableEntity, "unknown_policy", ErrUnknownPolicy},
+		{http.StatusUnprocessableEntity, "", ErrUnknownPolicy},
+		{http.StatusUnprocessableEntity, "admission_refused", ErrAdmissionRefused},
+		{http.StatusUnprocessableEntity, "posture_not_bound", ErrAttestHTTP},
+		{http.StatusPaymentRequired, "plan_lapsed", ErrAttestHTTP},
+		{http.StatusConflict, "x", ErrChallenge},
+		{http.StatusBadRequest, "x", ErrInvalidEvidence},
+		{http.StatusTooManyRequests, "quota_exceeded", ErrQuotaExceeded},
+		{http.StatusTooManyRequests, "rate_limited", ErrRateLimited},
+		{http.StatusTooManyRequests, "", ErrRateLimited},
 	}
 	for _, tc := range cases {
+		tc := tc
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(tc.status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "x", "message": "boom"})
+			body := map[string]string{"message": "boom"}
+			if tc.code != "" {
+				body["error"] = tc.code
+			}
+			_ = json.NewEncoder(w).Encode(body)
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 		_, err := c.Verify(context.Background(), json.RawMessage(`{}`),
@@ -292,10 +329,71 @@ func TestClient_ErrorMapping(t *testing.T) {
 			t.Errorf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
 		}
 		var apiErr *APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != tc.status {
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != tc.status || apiErr.Code != tc.code {
 			t.Errorf("status %d: APIError = %v", tc.status, err)
 		}
 		srv.Close()
+	}
+}
+
+// A 401 is only an invalid key when it is not an activation refusal; a 429 is
+// only the quota when it says so, and a limiter 429 carries its retry hint.
+func TestClient_RateLimitedCarriesRetryAfter(t *testing.T) {
+	cases := []struct {
+		name       string
+		header     map[string]string
+		body       string
+		sentinel   error
+		retryAfter int
+	}{
+		{"header wins over body", map[string]string{"Retry-After": "17"},
+			`{"error":"rate_limited","message":"Too many requests","retryAfterSeconds":60}`, ErrRateLimited, 17},
+		{"body when no header", nil,
+			`{"error":"rate_limited","retryAfterSeconds":60}`, ErrRateLimited, 60},
+		{"empty 429 is rate limited with no hint", nil, ``, ErrRateLimited, 0},
+		{"quota header wins whatever the body", map[string]string{"X-RootHerald-Quota": "device-limit-exceeded"},
+			`{}`, ErrQuotaExceeded, 0},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range tc.header {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+			_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("err = %v, want %v", err, tc.sentinel)
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.RetryAfterSeconds != tc.retryAfter {
+				t.Errorf("RetryAfterSeconds = %v, want %d", err, tc.retryAfter)
+			}
+		})
+	}
+}
+
+func TestClient_BareUnauthorizedIsInvalidSecretKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	_, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
+	if !errors.Is(err, ErrInvalidSecretKey) || errors.Is(err, ErrActivationRefused) {
+		t.Errorf("err = %v, want ErrInvalidSecretKey", err)
+	}
+}
+
+func TestNewClient_DefaultTimeout(t *testing.T) {
+	c, _ := NewClient("rh_sk_test_key")
+	if c.http.Timeout != DefaultTimeout || DefaultTimeout != 30*time.Second {
+		t.Errorf("timeout = %v, want 30s", c.http.Timeout)
 	}
 }
 

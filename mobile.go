@@ -43,12 +43,16 @@ type MobileAppVerifyRequest struct {
 // exactly as for a desktop client. Store the verdict keyed by Nonce so the
 // page the app reopens (returnUrl?nonce=<handle>) can fetch it.
 //
-// A body without a nonce is ErrChallenge; one whose evidence lacks
+// A body without a nonce is ErrInvalidArgument; one whose evidence lacks
 // iosAttestation.assertion or iosAttestation.keyId is ErrInvalidEvidence.
 // Neither makes a network call.
+//
+// VerifyMobileEvidence and RelayMobileEnrollment exist in the Go and Node SDKs
+// only; the other server SDKs relay the bridge bodies with their verify /
+// relayEnroll and the backend compares the enroll leg's two nonces itself.
 func (c *Client) VerifyMobileEvidence(ctx context.Context, body MobileAppVerifyRequest) (AttestResult, error) {
 	if body.Nonce == "" {
-		return AttestResult{}, fmt.Errorf("%w: VerifyMobileEvidence requires a body with nonce", ErrChallenge)
+		return AttestResult{}, fmt.Errorf("%w: VerifyMobileEvidence requires a body with nonce", ErrInvalidArgument)
 	}
 	var evidence struct {
 		IOSAttestation *IOSAttestation `json:"iosAttestation"`
@@ -60,6 +64,29 @@ func (c *Client) VerifyMobileEvidence(ctx context.Context, body MobileAppVerifyR
 		return AttestResult{}, fmt.Errorf("%w: VerifyMobileEvidence body is missing evidence.iosAttestation.{assertion,keyId}", ErrInvalidEvidence)
 	}
 	return c.Verify(ctx, body.Evidence, AttestOptions{Nonce: body.Nonce})
+}
+
+// RelayMobileEnrollment handles the POST the RootHerald bridge makes to the
+// backend's registered appEnrollUrl: {nonce, enrollment}. The enrollment is
+// the app's iOS EnrollBegin body and carries the same nonce inside it; the two
+// must agree, or the body was not assembled by the bridge from one challenge.
+// It then relays Enrollment with RelayEnroll. An iOS enrollment is one leg, so
+// the returned Challenge is empty and there is nothing to activate.
+//
+// A body without a nonce is ErrInvalidArgument; an enrollment that is not an
+// iOS blob, or whose nonce differs from the envelope's, is
+// ErrInvalidEnrollBlob. Neither makes a network call.
+func (c *Client) RelayMobileEnrollment(ctx context.Context, body MobileAppEnrollRequest) (RelayEnrollResult, error) {
+	if body.Nonce == "" {
+		return RelayEnrollResult{}, fmt.Errorf("%w: RelayMobileEnrollment requires a body with nonce", ErrInvalidArgument)
+	}
+	if body.Enrollment.Platform != PlatformIOS {
+		return RelayEnrollResult{}, fmt.Errorf("%w: RelayMobileEnrollment requires an iOS enrollment", ErrInvalidEnrollBlob)
+	}
+	if body.Enrollment.Nonce != body.Nonce {
+		return RelayEnrollResult{}, fmt.Errorf("%w: body nonce does not match enrollment.nonce", ErrInvalidEnrollBlob)
+	}
+	return c.RelayEnroll(ctx, body.Enrollment)
 }
 
 // BuildMobileAttestLink builds the Universal Link that opens the RootHerald

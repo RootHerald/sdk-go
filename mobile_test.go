@@ -30,7 +30,7 @@ func TestVerifyMobileEvidence_BrokersVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyMobileEvidence: %v", err)
 	}
-	if res.Verdict != VerdictAllow || res.Device == nil || res.Device.UEID != "dev-9" {
+	if res.Verdict != VerdictPass || res.Device == nil || res.Device.UEID != "dev-9" {
 		t.Errorf("result = %+v", res)
 	}
 	if gotBody["nonce"] != "n_1" {
@@ -53,7 +53,7 @@ func TestVerifyMobileEvidence_ValidatesBody(t *testing.T) {
 	}{
 		{"missing nonce", MobileAppVerifyRequest{
 			Evidence: json.RawMessage(`{"iosAttestation":{"assertion":"a","keyId":"k"}}`),
-		}, ErrChallenge},
+		}, ErrInvalidArgument},
 		{"no evidence", MobileAppVerifyRequest{Nonce: "n_1"}, ErrInvalidEvidence},
 		{"no iosAttestation", MobileAppVerifyRequest{
 			Nonce: "n_1", Evidence: json.RawMessage(`{"quote":{}}`),
