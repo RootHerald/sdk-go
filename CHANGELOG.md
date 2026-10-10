@@ -1,6 +1,65 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Wire 8.0. Every installation of a client has its own attestation key, created
+inside the TPM at enrollment and handed back as an opaque AK blob the client
+keeps and passes to every attest and mint. Keys are minted in their own
+ceremony. A backend on this version cannot drive a 7.0 client, and the
+reverse; the server refuses a 7.0-shaped enroll body with
+`400 wire_version_unsupported`.
+
+### Breaking
+
+- `RelayEnroll` takes the 8.0 TPM body: `EkPublicKey` plus
+  `AttestationKey *AttestationKeyPublic{PublicArea, ParentPublicArea,
+  QualifiedName}`, and refuses a TPM body carrying a top-level `AkPublicArea`
+  (the 7.0 shape) with `ErrInvalidEnrollBlob` before any request.
+  `AkPublicArea` is macOS only; the macOS body stays flat and the iOS body is
+  unchanged. `RelayEnrollJSON(ctx, json.RawMessage)` relays the client's JSON
+  byte-for-byte, unknown fields included.
+- Keys are minted by `IssueKeyChallenge(ctx, KeyChallengeOptions{Purpose,
+  ExpectedDevices})` → `CertifyKey(ctx, nonce, certification)` →
+  `CertifiedKey{DeviceID, KeyID, Purpose, Alg, Format, JWK, HardwareBound,
+  CertifiedAt}`. `AskKey`, `ChallengeOptions.KeyPurpose`, `AttestResult.Key`
+  and `CertifiedKey.AuthPolicy` are removed; a challenge that still asks for
+  `"key"` is `ErrInvalidAsk` (400 `invalid_ask`), told apart from
+  `ErrInvalidEvidence`.
+- `IssueChallenge(ctx)` takes no `deviceHint`, and `ChallengeOptions` has no
+  `DeviceHint`; it has `ExpectedKey` and `ExpectedDevices`. Pass the same
+  values in `AttestOptions`: a verdict that does not echo them under
+  `AttestResult.Expected` is `ErrExpectedNotEnforced`. A non-nil empty
+  `ExpectedDevices`, or one with a blank alias, is `ErrInvalidArgument`.
+- `JWK` is an EC P-256 key (`Crv`, `X`, `Y`) or an RSA-2048 key (`N`, `E`).
+  `VerifyKeySignature` checks ES256 (raw `r||s` or DER) and RS256 (PKCS#1 v1.5
+  over SHA-256, modulus of at least 2048 bits, signature of exactly the
+  modulus length); P-384 is refused, since no device certifies one.
+- `VerifyMobileEvidence`, `RelayMobileEnrollment`, `BuildMobileAttestLink`,
+  `IOSAttestation`, `MobileAppEnrollRequest` and `MobileAppVerifyRequest` are
+  removed with the mobile bridge.
+- `DeviceVerdict` declares every field the server sends; the optional
+  booleans and counts are pointers, nil when omitted.
+- A 429 `budget_exhausted` is `ErrQuotaExceeded` with `APIError.Budget{ID,
+  Name}`; the `quota_exceeded` code is gone. A 409 `key_rotation_conflict` is
+  `ErrAttestHTTP` with the code preserved, not `ErrChallenge`.
+
+### Migration
+
+1. Re-enroll every installation: the client's `EnrollBegin` now returns an
+   AK blob, which the client keeps and passes to `Attest` and `MintKey`.
+2. Replace `IssueChallengeWithOptions(ctx, ChallengeOptions{Ask:
+   []Ask{AskIdentity, AskKey}, KeyPurpose: "sign"})` plus `res.Key` with
+   `IssueKeyChallenge(ctx, KeyChallengeOptions{Purpose: KeyPurposeSign,
+   ExpectedDevices: []string{alias}})` and `CertifyKey(ctx, kc.Nonce,
+   certification)`.
+3. Drop the `deviceHint` argument of `IssueChallenge`; bind a challenge to a
+   device with `ExpectedDevices`.
+4. Replace `errors.Is(err, ErrQuotaExceeded)` checks that read
+   `quota_exceeded` from `APIError.Code` with `budget_exhausted`, and read
+   `APIError.Budget` for the budget that refused.
+5. Delete any mobile-bridge handler.
+
+## 0.2.0
 
 ### Breaking
 

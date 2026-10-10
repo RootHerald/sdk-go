@@ -7,15 +7,30 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
-// validEnrollBlob is a minimal well-formed TPM enroll request blob.
+// validEnrollBlob is a minimal well-formed wire 8.0 TPM enroll request blob.
 func validEnrollBlob() EnrollRequestBlob {
 	return EnrollRequestBlob{
+		EkPublicKey: "ZWtwdWI=",
+		AttestationKey: &AttestationKeyPublic{
+			PublicArea:       "YWtwdWI=",
+			ParentPublicArea: "cGFyZW50",
+			QualifiedName:    "cW4=",
+		},
+		Platform: PlatformWindows,
+	}
+}
+
+// validMacOSEnrollBlob is the flat Secure Enclave body: the enclave key twice,
+// no parent.
+func validMacOSEnrollBlob() EnrollRequestBlob {
+	return EnrollRequestBlob{
 		EkPublicKey:  "ZWtwdWI=",
-		AkPublicArea: "YWtwdWI=",
-		Platform:     PlatformWindows,
+		AkPublicArea: "ZWtwdWI=",
+		Platform:     PlatformMacOS,
 	}
 }
 
@@ -71,24 +86,76 @@ func TestRelayEnroll_TPM201(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q", gotMethod)
 	}
-	// Wire shape: the canonical JSON keys round-trip verbatim.
-	if gotBody["ekPublicKey"] != "ZWtwdWI=" || gotBody["akPublicArea"] != "YWtwdWI=" || gotBody["platform"] != "windows" {
+	// Wire shape: the canonical JSON keys round-trip verbatim, with the AK
+	// nested under attestationKey and no top-level akPublicArea.
+	if gotBody["ekPublicKey"] != "ZWtwdWI=" || gotBody["platform"] != "windows" {
 		t.Errorf("relayed enroll body = %v", gotBody)
+	}
+	ak, _ := gotBody["attestationKey"].(map[string]any)
+	if ak["publicArea"] != "YWtwdWI=" || ak["parentPublicArea"] != "cGFyZW50" || ak["qualifiedName"] != "cW4=" {
+		t.Errorf("attestationKey = %v", gotBody["attestationKey"])
 	}
 	report, _ := gotBody["tpmSelfReport"].(map[string]any)
 	if report["manufacturer"] != "INTC" || report["vendorString"] != "Intel" {
 		t.Errorf("tpmSelfReport = %v", gotBody["tpmSelfReport"])
 	}
-	for _, k := range []string{"iosKeyId", "iosAttestationObject", "nonce"} {
+	for _, k := range []string{"akPublicArea", "iosKeyId", "iosAttestationObject", "nonce"} {
 		if _, present := gotBody[k]; present {
 			t.Errorf("TPM enroll body carried %q", k)
 		}
 	}
 }
 
-// A macOS enrollment answers with a nonce for the enclave key to sign.
-func TestRelayEnroll_MacOS201(t *testing.T) {
+// RelayEnrollJSON relays the device's JSON byte-for-byte: fields this SDK does
+// not model reach the server unchanged.
+func TestRelayEnrollJSON_Verbatim(t *testing.T) {
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"enrollmentId": "enr-1", "credentialBlob": "cred", "encryptedSecret": "sec",
+		})
+	}))
+	defer srv.Close()
+
+	const body = `{"ekPublicKey":"e","platform":"linux","attestationKey":{"publicArea":"p","parentPublicArea":"q","qualifiedName":"n"},"futureField":{"a":[1]}}`
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	res, err := c.RelayEnrollJSON(context.Background(), json.RawMessage(body))
+	if err != nil {
+		t.Fatalf("RelayEnrollJSON: %v", err)
+	}
+	if res.Challenge == nil || res.Challenge.EnrollmentID != "enr-1" {
+		t.Errorf("Challenge = %+v", res.Challenge)
+	}
+	var want map[string]any
+	_ = json.Unmarshal([]byte(body), &want)
+	if !reflect.DeepEqual(gotBody, want) {
+		t.Errorf("relayed body = %v, want %v", gotBody, want)
+	}
+
+	for name, bad := range map[string]string{
+		"flat TPM body": `{"ekPublicKey":"e","akPublicArea":"a","platform":"windows"}`,
+		"not json":      `{`,
+		"no platform":   `{"ekPublicKey":"e"}`,
+	} {
+		gotBody = nil
+		_, err := c.RelayEnrollJSON(context.Background(), json.RawMessage(bad))
+		if !errors.Is(err, ErrInvalidEnrollBlob) || gotBody != nil {
+			t.Errorf("%s: err = %v (request sent = %v), want ErrInvalidEnrollBlob and no request", name, err, gotBody != nil)
+		}
+	}
+}
+
+// A macOS enrollment stays flat and answers with a nonce for the enclave key
+// to sign.
+func TestRelayEnroll_MacOS201(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -99,14 +166,18 @@ func TestRelayEnroll_MacOS201(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	blob := validEnrollBlob()
-	blob.Platform = PlatformMacOS
-	res, err := c.RelayEnroll(context.Background(), blob)
+	res, err := c.RelayEnroll(context.Background(), validMacOSEnrollBlob())
 	if err != nil {
 		t.Fatalf("RelayEnroll: %v", err)
 	}
 	if res.Challenge == nil || res.Challenge.EnrollmentID != "enr-2" || res.Challenge.ChallengeNonce != "bm9uY2U=" {
 		t.Errorf("Challenge = %+v", res.Challenge)
+	}
+	if gotBody["ekPublicKey"] != "ZWtwdWI=" || gotBody["akPublicArea"] != "ZWtwdWI=" || gotBody["platform"] != "macos" {
+		t.Errorf("relayed enroll body = %v", gotBody)
+	}
+	if _, present := gotBody["attestationKey"]; present {
+		t.Errorf("macOS enroll body carried attestationKey")
 	}
 }
 
@@ -137,7 +208,7 @@ func TestRelayEnroll_IOSEmpty201(t *testing.T) {
 	if gotBody["platform"] != "ios" || gotBody["iosKeyId"] != "a2V5" || gotBody["iosAttestationObject"] != "YXR0" || gotBody["nonce"] != "bm9uY2U" {
 		t.Errorf("relayed enroll body = %v", gotBody)
 	}
-	for _, k := range []string{"ekPublicKey", "akPublicArea"} {
+	for _, k := range []string{"ekPublicKey", "akPublicArea", "attestationKey"} {
 		if _, present := gotBody[k]; present {
 			t.Errorf("iOS enroll body carried %q", k)
 		}
@@ -187,20 +258,32 @@ func TestRelayEnroll_409IsAPIError(t *testing.T) {
 	}
 }
 
+// Three shapes are accepted: the nested 8.0 TPM body, the flat macOS body and
+// the iOS body. A flat TPM body is the 7.0 shape and is refused before any
+// request, as is a body that carries both.
 func TestRelayEnroll_ValidatesBlob(t *testing.T) {
 	c, _ := NewClient("rh_sk_test_key", WithBaseURL("http://127.0.0.1:0"))
+	ak := &AttestationKeyPublic{PublicArea: "p", ParentPublicArea: "q", QualifiedName: "n"}
 	cases := []struct {
 		name string
 		blob EnrollRequestBlob
 	}{
-		{"missing both", EnrollRequestBlob{}},
-		{"missing ak", EnrollRequestBlob{EkPublicKey: "x", Platform: PlatformWindows}},
-		{"missing ek", EnrollRequestBlob{AkPublicArea: "y", Platform: PlatformLinux}},
+		{"empty", EnrollRequestBlob{}},
+		{"unknown platform", EnrollRequestBlob{EkPublicKey: "x", AttestationKey: ak, Platform: "android"}},
+		{"tpm flat 7.0 shape", EnrollRequestBlob{EkPublicKey: "x", AkPublicArea: "y", Platform: PlatformWindows}},
+		{"tpm both shapes", EnrollRequestBlob{EkPublicKey: "x", AkPublicArea: "y", AttestationKey: ak, Platform: PlatformLinux}},
+		{"tpm missing attestationKey", EnrollRequestBlob{EkPublicKey: "x", Platform: PlatformWindows}},
+		{"tpm missing ek", EnrollRequestBlob{AttestationKey: ak, Platform: PlatformLinux}},
+		{"tpm missing publicArea", EnrollRequestBlob{EkPublicKey: "x", AttestationKey: &AttestationKeyPublic{ParentPublicArea: "q", QualifiedName: "n"}, Platform: PlatformWindows}},
+		{"tpm missing parentPublicArea", EnrollRequestBlob{EkPublicKey: "x", AttestationKey: &AttestationKeyPublic{PublicArea: "p", QualifiedName: "n"}, Platform: PlatformWindows}},
+		{"tpm missing qualifiedName", EnrollRequestBlob{EkPublicKey: "x", AttestationKey: &AttestationKeyPublic{PublicArea: "p", ParentPublicArea: "q"}, Platform: PlatformWindows}},
 		{"macos missing ak", EnrollRequestBlob{EkPublicKey: "x", Platform: PlatformMacOS}},
+		{"macos missing ek", EnrollRequestBlob{AkPublicArea: "y", Platform: PlatformMacOS}},
+		{"macos with attestationKey", EnrollRequestBlob{EkPublicKey: "x", AkPublicArea: "y", AttestationKey: ak, Platform: PlatformMacOS}},
 		{"ios missing keyId", EnrollRequestBlob{Platform: PlatformIOS, IOSAttestationObject: "a", Nonce: "n"}},
 		{"ios missing attestation", EnrollRequestBlob{Platform: PlatformIOS, IOSKeyID: "k", Nonce: "n"}},
 		{"ios missing nonce", EnrollRequestBlob{Platform: PlatformIOS, IOSKeyID: "k", IOSAttestationObject: "a"}},
-		{"ios with tpm fields only", EnrollRequestBlob{Platform: PlatformIOS, EkPublicKey: "x", AkPublicArea: "y"}},
+		{"ios with tpm fields only", EnrollRequestBlob{Platform: PlatformIOS, EkPublicKey: "x", AttestationKey: ak}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,28 +293,40 @@ func TestRelayEnroll_ValidatesBlob(t *testing.T) {
 			}
 		})
 	}
+	for _, ok := range []EnrollRequestBlob{validEnrollBlob(), validMacOSEnrollBlob(), validIOSEnrollBlob()} {
+		if err := validateEnrollBlob(ok); err != nil {
+			t.Errorf("%s blob refused: %v", ok.Platform, err)
+		}
+	}
 }
 
 func TestRelayEnroll_ErrorMapping(t *testing.T) {
 	cases := []struct {
 		status   int
+		code     string
 		sentinel error
 	}{
-		{http.StatusUnauthorized, ErrInvalidSecretKey},
-		{http.StatusBadRequest, ErrInvalidEvidence},
-		{http.StatusTooManyRequests, ErrRateLimited},
+		{http.StatusUnauthorized, "x", ErrInvalidSecretKey},
+		{http.StatusBadRequest, "x", ErrInvalidEvidence},
+		{http.StatusBadRequest, "wire_version_unsupported", ErrInvalidEvidence},
+		{http.StatusBadRequest, "invalid_enroll_shape", ErrInvalidEvidence},
+		{http.StatusTooManyRequests, "x", ErrRateLimited},
 	}
 	for _, tc := range cases {
 		tc := tc
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(tc.status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "x", "message": "boom"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": tc.code, "message": "boom"})
 		}))
 		c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
 		_, err := c.RelayEnroll(context.Background(), validEnrollBlob())
 		if !errors.Is(err, tc.sentinel) {
-			t.Errorf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
+			t.Errorf("status %d %q: err = %v, want %v", tc.status, tc.code, err, tc.sentinel)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Code != tc.code {
+			t.Errorf("status %d %q: APIError = %+v", tc.status, tc.code, apiErr)
 		}
 		srv.Close()
 	}
@@ -353,65 +448,5 @@ func TestRelayActivate_ErrorMapping(t *testing.T) {
 	})
 	if !errors.Is(err, ErrActivationRefused) || errors.Is(err, ErrInvalidSecretKey) {
 		t.Errorf("err = %v, want ErrActivationRefused", err)
-	}
-}
-
-// The bridge's enroll envelope carries the nonce twice; a mismatch is refused
-// before any request is made.
-func TestRelayMobileEnrollment_NonceEquality(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer srv.Close()
-	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	ios := EnrollRequestBlob{Platform: PlatformIOS, IOSKeyID: "k", IOSAttestationObject: "o", Nonce: "n_1"}
-
-	if _, err := c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_1", Enrollment: ios}); err != nil {
-		t.Fatalf("matching nonces: %v", err)
-	}
-	if gotBody["nonce"] != "n_1" || gotBody["platform"] != "ios" {
-		t.Errorf("relayed body = %v", gotBody)
-	}
-	gotBody = nil
-	_, err := c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_2", Enrollment: ios})
-	if !errors.Is(err, ErrInvalidEnrollBlob) || gotBody != nil {
-		t.Errorf("mismatched nonces: err = %v, request sent = %v", err, gotBody != nil)
-	}
-	_, err = c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Enrollment: ios})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("missing envelope nonce: err = %v, want ErrInvalidArgument", err)
-	}
-	tpm := validEnrollBlob()
-	_, err = c.RelayMobileEnrollment(context.Background(), MobileAppEnrollRequest{Nonce: "n_1", Enrollment: tpm})
-	if !errors.Is(err, ErrInvalidEnrollBlob) {
-		t.Errorf("non-iOS enrollment: err = %v, want ErrInvalidEnrollBlob", err)
-	}
-}
-
-// Verify is the renamed primary; Attest stays as a thin alias.
-func TestVerify_AliasParity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"verdict": map[string]any{"device": map[string]any{"verdict": "pass"}},
-		})
-	}))
-	defer srv.Close()
-
-	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
-	v, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	a, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{Nonce: "n_1"})
-	if err != nil {
-		t.Fatalf("Attest alias: %v", err)
-	}
-	if v.Verdict != VerdictPass || a.Verdict != VerdictPass {
-		t.Errorf("Verify=%s Attest=%s, want pass", v.Verdict, a.Verdict)
 	}
 }

@@ -1,53 +1,63 @@
 package rootherald
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"math/big"
 	"strings"
 )
 
+// minRSAModulusBits is the smallest RSA key a device certifies.
+const minRSAModulusBits = 2048
+
 // VerifyKeySignature checks a signature made by a key RootHerald certified
-// (AttestResult.Key.JWK) over message, with no call to RootHerald. The customer
-// stores the JWK at attestation time and checks each later request locally.
+// (CertifiedKey.JWK) over message, with no call to RootHerald. The customer
+// stores the JWK at certification and checks each later request locally.
 //
-// The signature is ECDSA over SHA-256(message) for P-256 and SHA-384(message)
-// for P-384, in either the raw r||s form (64 or 96 bytes, as a TPM emits) or
-// ASN.1 DER. It returns false for anything it cannot verify — an unsupported
-// key, a point off the curve, or a malformed signature — and never panics.
+// An EC P-256 key checks ES256: ECDSA over SHA-256(message), in either the
+// raw r||s form (64 bytes, as a TPM emits) or ASN.1 DER. An RSA key checks
+// RS256: PKCS#1 v1.5 over SHA-256(message), with a modulus of at least 2048
+// bits and a signature of exactly the modulus length (256 bytes for
+// RSA-2048).
+//
+// A signature proves possession of the key at that moment, not how the
+// machine booted; run an attest challenge for that.
+//
+// It returns false for anything it cannot verify — an unsupported key, a
+// point off the curve, a short modulus, or a malformed signature — and never
+// panics: a verifier that can panic is a verifier that can be made to skip a
+// check.
 func VerifyKeySignature(jwk JWK, message, signature []byte) (ok bool) {
 	defer func() {
 		if recover() != nil {
 			ok = false
 		}
 	}()
-
-	if jwk.Kty != "EC" {
+	if len(signature) == 0 {
 		return false
 	}
-	var (
-		curve  elliptic.Curve
-		digest []byte
-	)
-	switch jwk.Crv {
-	case "P-256":
-		curve = elliptic.P256()
-		d := sha256.Sum256(message)
-		digest = d[:]
-	case "P-384":
-		curve = elliptic.P384()
-		d := sha512.Sum384(message)
-		digest = d[:]
-	default:
+	digest := sha256.Sum256(message)
+	switch jwk.Kty {
+	case "EC":
+		return verifyES256(jwk, digest[:], signature)
+	case "RSA":
+		return verifyRS256(jwk, digest[:], signature)
+	}
+	return false
+}
+
+func verifyES256(jwk JWK, digest, signature []byte) bool {
+	if jwk.Crv != "P-256" {
 		return false
 	}
-
+	curve := elliptic.P256()
 	size := (curve.Params().BitSize + 7) / 8
-	x, okX := decodeCoordinate(jwk.X, size)
-	y, okY := decodeCoordinate(jwk.Y, size)
+	x, okX := decodeFixed(jwk.X, size)
+	y, okY := decodeFixed(jwk.Y, size)
 	if !okX || !okY {
 		return false
 	}
@@ -61,19 +71,42 @@ func VerifyKeySignature(jwk JWK, message, signature []byte) (ok bool) {
 	if len(signature) == 2*size {
 		r := new(big.Int).SetBytes(signature[:size])
 		s := new(big.Int).SetBytes(signature[size:])
-		if ecdsa.Verify(pub, digest, r, s) {
-			return true
-		}
+		return ecdsa.Verify(pub, digest, r, s)
 	}
 	return ecdsa.VerifyASN1(pub, digest, signature)
 }
 
-// decodeCoordinate decodes one base64url JWK coordinate of exactly size bytes.
-// JWK coordinates are unpadded, but padding is tolerated.
-func decodeCoordinate(s string, size int) (*big.Int, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
-	if err != nil || len(raw) != size {
+func verifyRS256(jwk JWK, digest, signature []byte) bool {
+	n, okN := decodeBase64URL(jwk.N)
+	e, okE := decodeBase64URL(jwk.E)
+	if !okN || !okE || len(n) == 0 || len(e) == 0 || len(e) > 4 {
+		return false
+	}
+	pub := &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}
+	if pub.N.BitLen() < minRSAModulusBits || pub.E < 3 {
+		return false
+	}
+	if len(signature) != pub.Size() {
+		return false
+	}
+	return rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest, signature) == nil
+}
+
+// decodeFixed decodes one base64url JWK coordinate of exactly size bytes.
+func decodeFixed(s string, size int) (*big.Int, bool) {
+	raw, ok := decodeBase64URL(s)
+	if !ok || len(raw) != size {
 		return nil, false
 	}
 	return new(big.Int).SetBytes(raw), true
+}
+
+// decodeBase64URL decodes an unpadded base64url JWK parameter; padding is
+// tolerated.
+func decodeBase64URL(s string) ([]byte, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
