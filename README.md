@@ -206,13 +206,13 @@ the server's `Code` and `Message`) wrapping a sentinel for `errors.Is`:
 | ------ | ---------------------------------------------------- | ---------------------- |
 | 401    | `activation_refused`                                 | `ErrActivationRefused` |
 | 401    | anything else                                        | `ErrInvalidSecretKey`  |
-| 400    | `invalid_ask`                                        | `ErrInvalidAsk`        |
-| 400    | anything else, including `wire_version_unsupported`, `invalid_enroll_shape` | `ErrInvalidEvidence` |
+| 400    | `invalid_ask`, `invalid_purpose`                     | `ErrInvalidAsk`        |
+| 400    | anything else, including `wire_version_unsupported`, `invalid_enroll_shape`, `invalid_certification` | `ErrInvalidEvidence` |
 | 409    | `key_rotation_conflict`                              | `ErrAttestHTTP`        |
-| 409    | anything else                                        | `ErrChallenge`         |
+| 409    | anything else, including `challenge_expired_or_used` | `ErrChallenge`         |
 | 422    | `unknown_policy`, or none                            | `ErrUnknownPolicy`     |
 | 422    | `admission_refused`                                  | `ErrAdmissionRefused`  |
-| 422    | `expected_unknown`, `key_disclosure_too_low`         | `ErrAttestHTTP`        |
+| 422    | `expected_unknown`, `key_disclosure_too_low`, `purpose_unsupported`, `certification_rejected` | `ErrAttestHTTP` |
 | 429    | `budget_exhausted`, or an `X-RootHerald-Quota` header | `ErrQuotaExceeded` (`APIError.Budget`) |
 | 429    | anything else                                        | `ErrRateLimited`       |
 

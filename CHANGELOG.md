@@ -41,7 +41,10 @@ reverse; the server refuses a 7.0-shaped enroll body with
   booleans and counts are pointers, nil when omitted.
 - A 429 `budget_exhausted` is `ErrQuotaExceeded` with `APIError.Budget{ID,
   Name}`; the `quota_exceeded` code is gone. A 409 `key_rotation_conflict` is
-  `ErrAttestHTTP` with the code preserved, not `ErrChallenge`.
+  `ErrAttestHTTP` with the code preserved, not `ErrChallenge`. A 400
+  `invalid_purpose` is `ErrInvalidAsk`; a 400 `invalid_certification` is
+  `ErrInvalidEvidence`; a 422 `purpose_unsupported` or
+  `certification_rejected` is `ErrAttestHTTP` with the code preserved.
 
 ### Migration
 

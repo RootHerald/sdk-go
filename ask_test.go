@@ -412,6 +412,27 @@ func TestClient_InvalidAskIsNotInvalidEvidence(t *testing.T) {
 	}
 }
 
+// A 400 invalid_purpose on the key challenge is the same mistake as
+// invalid_ask: the backend named a purpose the server does not know.
+func TestClient_InvalidPurposeIsNotInvalidEvidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_purpose", "message": "purpose must be one of sign, decrypt"})
+	}))
+	defer srv.Close()
+
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	_, err := c.IssueKeyChallenge(context.Background(), KeyChallengeOptions{Purpose: KeyPurposeSign})
+	if !errors.Is(err, ErrInvalidAsk) || errors.Is(err, ErrInvalidEvidence) {
+		t.Errorf("err = %v, want ErrInvalidAsk", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_purpose" {
+		t.Errorf("APIError = %+v", apiErr)
+	}
+}
+
 // A 409 key_rotation_conflict is the rotation colliding, not the challenge
 // being spent; it stays a generic error with the code preserved.
 func TestClient_KeyRotationConflictIsNotChallengeError(t *testing.T) {

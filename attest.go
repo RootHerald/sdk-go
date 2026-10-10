@@ -38,14 +38,16 @@ const secretKeyPrefix = "rh_sk_"
 //	                              bound to the key)
 //	409 -> ErrChallenge          (nonce unknown/expired/already used; a 409
 //	                              key_rotation_conflict is ErrAttestHTTP)
-//	400 -> ErrInvalidAsk         (error code invalid_ask: the challenge named
-//	                              an ask the server does not know, such as the
-//	                              retired "key"; the backend's code is wrong,
-//	                              not the device)
+//	400 -> ErrInvalidAsk         (error code invalid_ask or invalid_purpose:
+//	                              the challenge named an ask or purpose the
+//	                              server does not know, such as the retired
+//	                              "key"; the backend's code is wrong, not the
+//	                              device)
 //	400 -> ErrInvalidEvidence    (any other 400: a relayed blob was malformed
 //	                              or could not be appraised, including
 //	                              wire_version_unsupported and
-//	                              invalid_enroll_shape on enroll)
+//	                              invalid_enroll_shape on enroll and
+//	                              invalid_certification on certify)
 //	429 -> ErrQuotaExceeded      (error code budget_exhausted or an
 //	                              X-RootHerald-Quota header: the API key's
 //	                              budget cannot pay for a device new to the
@@ -55,8 +57,9 @@ const secretKeyPrefix = "rh_sk_"
 //
 // Where one status carries two refusals the server's error code (or a header)
 // tells them apart. A status or code no sentinel covers — including 422
-// expected_unknown, key_disclosure_too_low and posture_not_bound, 409
-// key_rotation_conflict and 402 plan_lapsed — is ErrAttestHTTP with the code
+// expected_unknown, key_disclosure_too_low, purpose_unsupported,
+// certification_rejected and posture_not_bound, 409 key_rotation_conflict and
+// 402 plan_lapsed — is ErrAttestHTTP with the code
 // preserved in APIError.Code. The refused TPM class travels in APIError.Message.
 //
 // ErrInvalidArgument flags input the SDK refused locally, before any network
@@ -90,6 +93,7 @@ const (
 	codeUnknownPolicy       = "unknown_policy"
 	codeBudgetExhausted     = "budget_exhausted"
 	codeInvalidAsk          = "invalid_ask"
+	codeInvalidPurpose      = "invalid_purpose"
 	codeKeyRotationConflict = "key_rotation_conflict"
 )
 
@@ -864,7 +868,7 @@ func toAPIError(resp *http.Response) error {
 			sentinel = ErrChallenge
 		}
 	case http.StatusBadRequest: // 400
-		if parsed.Error == codeInvalidAsk {
+		if parsed.Error == codeInvalidAsk || parsed.Error == codeInvalidPurpose {
 			sentinel = ErrInvalidAsk
 		} else {
 			sentinel = ErrInvalidEvidence
