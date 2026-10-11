@@ -13,6 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -279,6 +282,98 @@ func TestEncryptToDevice_SeamMakesTheEnvelopeReproducible(t *testing.T) {
 	}
 	if got, err := referenceOpen(a, priv, nil, true); err != nil || !bytes.Equal(got, envelopePlaintext) {
 		t.Fatalf("open: %v %q", err, got)
+	}
+}
+
+// ── Known-answer vectors from platform Fixtures/envelope ─────────────────────
+//
+// ECDH-ES replays byte for byte with the vector's ephemeral key and IV.
+// RSA-OAEP-256 draws its OAEP seed from the reader between the CEK and the IV
+// and the vector does not record it, so the header, IV, ciphertext and tag
+// are byte-equal and the encrypted key must unwrap to the vector's CEK.
+
+type envelopeVector struct {
+	Alg       string            `json:"alg"`
+	Plaintext string            `json:"plaintext"`
+	Recipient map[string]string `json:"recipient"`
+	Ephemeral map[string]string `json:"ephemeral"`
+	CEK       string            `json:"cek"`
+	IV        string            `json:"iv"`
+	JWE       string            `json:"jwe"`
+}
+
+func loadVector(t *testing.T, file string) envelopeVector {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "envelope", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v envelopeVector
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func publicJWK(private map[string]string) JWK {
+	if private["kty"] == "EC" {
+		return JWK{Kty: "EC", Crv: private["crv"], X: private["x"], Y: private["y"]}
+	}
+	return JWK{Kty: "RSA", N: private["n"], E: private["e"]}
+}
+
+func TestEncryptToDevice_EcdhEsVector_ReplaysByteForByte(t *testing.T) {
+	v := loadVector(t, "ecdh-es-a256gcm.json")
+	eph, err := ecdh.P256().NewPrivateKey(mustDecode(t, v.Ephemeral["d"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := decryptKey(algECDHES, formatJWE, publicJWK(v.Recipient))
+
+	jwe, err := encryptToDevice(key, mustDecode(t, v.Plaintext), envelopeRandom{
+		ephemeral: func() (*ecdh.PrivateKey, error) { return eph, nil },
+		bytes:     bytes.NewReader(mustDecode(t, v.IV)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jwe != v.JWE {
+		t.Fatalf("got  %s\nwant %s", jwe, v.JWE)
+	}
+}
+
+func TestEncryptToDevice_RsaOaep256Vector_ReplaysExceptTheOaepSeed(t *testing.T) {
+	v := loadVector(t, "rsa-oaep-256-a256gcm.json")
+	key := decryptKey(algRSAOAEP256, formatJWE, publicJWK(v.Recipient))
+	seed := make([]byte, 32)
+	stream := append(append(mustDecode(t, v.CEK), seed...), mustDecode(t, v.IV)...)
+
+	jwe, err := encryptToDevice(key, mustDecode(t, v.Plaintext), envelopeRandom{
+		ephemeral: func() (*ecdh.PrivateKey, error) { return nil, errors.New("RSA drew an ephemeral key") },
+		bytes:     bytes.NewReader(stream),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := strings.Split(v.JWE, ".")
+	actual := strings.Split(jwe, ".")
+	for _, i := range []int{0, 2, 3, 4} {
+		if actual[i] != expected[i] {
+			t.Fatalf("segment %d differs:\ngot  %s\nwant %s", i, actual[i], expected[i])
+		}
+	}
+	priv := &rsa.PrivateKey{
+		PublicKey: rsa.PublicKey{N: new(big.Int).SetBytes(mustDecode(t, v.Recipient["n"])), E: int(new(big.Int).SetBytes(mustDecode(t, v.Recipient["e"])).Int64())},
+		D:         new(big.Int).SetBytes(mustDecode(t, v.Recipient["d"])),
+		Primes:    []*big.Int{new(big.Int).SetBytes(mustDecode(t, v.Recipient["p"])), new(big.Int).SetBytes(mustDecode(t, v.Recipient["q"]))},
+	}
+	priv.Precompute()
+	cek, err := rsa.DecryptOAEP(sha256.New(), nil, priv, mustDecode(t, actual[1]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cek, mustDecode(t, v.CEK)) {
+		t.Fatal("the encrypted key does not unwrap to the vector's CEK")
 	}
 }
 
