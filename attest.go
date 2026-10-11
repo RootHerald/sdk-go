@@ -568,14 +568,26 @@ func requireExpectedEnforced(result AttestResult, expectedKey string, expectedDe
 		return fmt.Errorf("%w: verify response did not echo the ExpectedKey the challenge named", ErrExpectedNotEnforced)
 	}
 	if expectedDevices != nil {
-		if echoed == nil || !sameSet(echoed.Devices, expectedDevices) {
+		// Aliases are GUIDs: the server accepts any spelling and echoes lowercase.
+		asked := normalizeAliases(expectedDevices)
+		if echoed == nil || !sameSet(normalizeAliases(echoed.Devices), asked) {
 			return fmt.Errorf("%w: verify response did not echo the ExpectedDevices the challenge named", ErrExpectedNotEnforced)
 		}
-		if result.Verdict != VerdictFail && result.Device != nil && result.Device.UEID != "" && !contains(expectedDevices, result.Device.UEID) {
+		if result.Verdict != VerdictFail && result.Device != nil && result.Device.UEID != "" && !contains(asked, normalizeAlias(result.Device.UEID)) {
 			return fmt.Errorf("%w: verify response names a device outside ExpectedDevices", ErrExpectedNotEnforced)
 		}
 	}
 	return nil
+}
+
+func normalizeAlias(alias string) string { return strings.ToLower(strings.TrimSpace(alias)) }
+
+func normalizeAliases(aliases []string) []string {
+	out := make([]string, len(aliases))
+	for i, a := range aliases {
+		out[i] = normalizeAlias(a)
+	}
+	return out
 }
 
 func sameSet(a, b []string) bool {

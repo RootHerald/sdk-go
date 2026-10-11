@@ -501,3 +501,30 @@ func TestRelayEnroll_AdmissionRefused(t *testing.T) {
 		t.Errorf("APIError = %+v", apiErr)
 	}
 }
+
+// The server accepts any GUID spelling in expectedDevices and echoes the
+// alias lowercase, so the comparison is case-insensitive.
+func TestClient_VerifyComparesAliasesCaseInsensitively(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict": map[string]any{
+				"device":   map[string]any{"verdict": "pass", "ueid": "dev-9"},
+				"expected": map[string]any{"devices": []string{"dev-9", "dev-10"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+	result, err := c.Verify(context.Background(), json.RawMessage(`{}`), AttestOptions{
+		Nonce:           "n_1",
+		ExpectedDevices: []string{" DEV-9 ", "Dev-10"},
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.Verdict != VerdictPass {
+		t.Errorf("verdict = %v", result.Verdict)
+	}
+}
