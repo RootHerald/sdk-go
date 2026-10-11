@@ -12,8 +12,9 @@ import (
 // made; HTTP-status problems still surface as *APIError wrapping the attest
 // sentinels (ErrInvalidSecretKey, ErrChallenge, …).
 var (
-	// ErrInvalidEnrollBlob is returned by RelayEnroll when the supplied
-	// EnrollRequestBlob is missing the fields its platform requires.
+	// ErrInvalidEnrollBlob is returned by RelayEnroll and RelayEnrollJSON
+	// when the supplied enroll body is missing the fields its platform
+	// requires, or is the flat wire 7.0 TPM shape.
 	ErrInvalidEnrollBlob = errors.New("rootherald: invalid enroll request blob")
 	// ErrInvalidActivation is returned by RelayActivate when the supplied
 	// EnrollActivationResponse is missing its EnrollmentID or its proof.
@@ -21,9 +22,9 @@ var (
 )
 
 // Platform is the platform an enroll blob was produced on. The server records
-// it on the device and later demands the activation proof of the RECORDED
-// platform, so reshaping a blob cannot move a TPM device onto a weaker
-// ceremony.
+// it on the installation and later demands the activation proof of the
+// RECORDED platform, so reshaping a blob cannot move a TPM device onto a
+// weaker ceremony.
 type Platform string
 
 const (
@@ -41,25 +42,50 @@ type TpmSelfReport struct {
 	VendorString string `json:"vendorString"`
 }
 
-// EnrollRequestBlob is the client's EnrollBegin() output — the body of
-// POST /api/v1/attest/enroll. This backend helper relays it verbatim to
-// RootHerald, which validates it and returns an EnrollActivationChallenge.
-// Which fields are set depends on Platform:
+// AttestationKeyPublic is the per-installation attestation key, as
+// EnrollBegin() describes it to the server. All three fields are base64.
 //
-//	windows | linux   EkPublicKey, AkPublicArea, and optionally EkCertPem,
-//	                  EkCertificateChain, TpmSelfReport
+// The server recomputes the qualified name from the two public areas and
+// refuses the enrollment (400 invalid_enroll_shape) when it differs from
+// QualifiedName, so a key created under the wrong parent fails before any
+// elevation prompt and before any row is written.
+type AttestationKeyPublic struct {
+	// PublicArea is the TPM2B_PUBLIC of the AK, as TPM2_Create emitted it.
+	PublicArea string `json:"publicArea"`
+	// ParentPublicArea is the TPM2B_PUBLIC of the storage parent the AK was
+	// created under.
+	ParentPublicArea string `json:"parentPublicArea"`
+	// QualifiedName is the TPM2B_NAME qualified name of the AK, as
+	// TPM2_ReadPublic returned it.
+	QualifiedName string `json:"qualifiedName"`
+}
+
+// EnrollRequestBlob is the client's EnrollBegin() output — the body of
+// POST /api/v1/attest/enroll. This backend helper relays it to RootHerald,
+// which validates it and returns an EnrollActivationChallenge. Which fields
+// are set depends on Platform:
+//
+//	windows | linux   EkPublicKey and AttestationKey, and optionally
+//	                  EkCertPem, EkCertificateChain, TpmSelfReport
 //	macos             EkPublicKey and AkPublicArea, both the enclave key
 //	ios               IOSKeyID, IOSAttestationObject, Nonce
+//
+// The nested AttestationKey is what tells a wire 8.0 TPM body from a 7.0
+// one; a TPM body with a top-level AkPublicArea is refused locally
+// (ErrInvalidEnrollBlob). The macOS body stays flat and is never refused for
+// its shape.
 //
 // No device identifier travels in this body: the server derives the device
 // from the key material itself.
 type EnrollRequestBlob struct {
-	// EkPublicKey is the base64 platform-native EK public blob (Windows: NCrypt
-	// PCP_EKPUB; macOS: the enclave key, X9.63 uncompressed).
+	// EkPublicKey is the base64 TPM2B_PUBLIC of the endorsement key on a TPM
+	// platform; on macOS it is the enclave key, X9.63 uncompressed.
 	EkPublicKey string `json:"ekPublicKey,omitempty"`
-	// AkPublicArea is the base64 TPM2B_PUBLIC of the AK (length-prefixed
-	// TPMT_PUBLIC) the server hashes into the AK Name for TPM2_MakeCredential.
-	// On macOS it is the same key as EkPublicKey.
+	// AttestationKey is this installation's attestation key and its parent.
+	// Set for windows | linux.
+	AttestationKey *AttestationKeyPublic `json:"attestationKey,omitempty"`
+	// AkPublicArea is the enclave key again, the same as EkPublicKey. Set for
+	// macos only: a TPM body carrying it is the wire 7.0 shape.
 	AkPublicArea string `json:"akPublicArea,omitempty"`
 	// Platform is the reporting platform. Required.
 	Platform Platform `json:"platform"`
@@ -117,10 +143,11 @@ type EnrollActivationResponse struct {
 
 // RelayEnrollResult is the outcome of the enroll relay leg.
 //
-// Enrollment always issues a challenge, including for a device already known —
-// re-enrollment is how a device rotates its attestation key, so short-circuiting
-// it would make rotation impossible. Hand Challenge to the client's
-// EnrollComplete, then pass the result to RelayActivate.
+// Enrollment always issues a challenge, including for a device already known:
+// each activation creates a new installation of the device with its own AK
+// blob, which the client keeps. Hand Challenge to the client's EnrollComplete,
+// then pass the result to RelayActivate. The device's alias is returned by
+// RelayActivate, not here, and does not change across installations.
 type RelayEnrollResult struct {
 	// Challenge is the 201 body to relay to the client.
 	Challenge *EnrollActivationChallenge
@@ -146,14 +173,39 @@ type RelayActivateResponse struct {
 // whose TPM class can never satisfy it is refused before it gets an
 // attestation key, as ErrAdmissionRefused with the class in APIError.Message.
 //
+// The typed blob carries the fields this SDK models; when the backend holds
+// the client's JSON, RelayEnrollJSON relays it byte-for-byte instead.
+//
 // The client never holds the rh_sk_ key and never talks to RootHerald; this
 // backend helper is the only thing that does.
 func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (RelayEnrollResult, error) {
 	if err := validateEnrollBlob(blob); err != nil {
 		return RelayEnrollResult{}, err
 	}
+	body, err := json.Marshal(blob)
+	if err != nil {
+		return RelayEnrollResult{}, fmt.Errorf("%w: %v", ErrInvalidEnrollBlob, err)
+	}
+	return c.relayEnroll(ctx, blob.Platform, body)
+}
 
-	resp, err := c.rawPost(ctx, "/api/v1/attest/enroll", blob)
+// RelayEnrollJSON relays the client's EnrollBegin() output byte-for-byte.
+// Prefer it when the backend holds the device's JSON: fields this SDK does
+// not model reach RootHerald unchanged. The body is validated the same way
+// as RelayEnroll before any request is made.
+func (c *Client) RelayEnrollJSON(ctx context.Context, body json.RawMessage) (RelayEnrollResult, error) {
+	var probe EnrollRequestBlob
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return RelayEnrollResult{}, fmt.Errorf("%w: %v", ErrInvalidEnrollBlob, err)
+	}
+	if err := validateEnrollBlob(probe); err != nil {
+		return RelayEnrollResult{}, err
+	}
+	return c.relayEnroll(ctx, probe.Platform, body)
+}
+
+func (c *Client) relayEnroll(ctx context.Context, platform Platform, body json.RawMessage) (RelayEnrollResult, error) {
+	resp, err := c.rawPost(ctx, "/api/v1/attest/enroll", body)
 	if err != nil {
 		return RelayEnrollResult{}, err
 	}
@@ -167,7 +219,7 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 	if err := json.NewDecoder(resp.Body).Decode(&ch); err != nil {
 		return RelayEnrollResult{}, fmt.Errorf("%w: malformed response: %v", ErrAttestHTTP, err)
 	}
-	if blob.Platform != PlatformIOS {
+	if platform != PlatformIOS {
 		if ch.EnrollmentID == "" {
 			return RelayEnrollResult{}, fmt.Errorf("%w: enroll response missing enrollmentId", ErrAttestHTTP)
 		}
@@ -178,15 +230,30 @@ func (c *Client) RelayEnroll(ctx context.Context, blob EnrollRequestBlob) (Relay
 	return RelayEnrollResult{Challenge: &ch}, nil
 }
 
+// validateEnrollBlob accepts the three shapes the server does. A flat TPM
+// body is the 7.0 shape and is refused here rather than relayed: the server
+// would answer wire_version_unsupported anyway, and refusing locally keeps
+// the message specific.
 func validateEnrollBlob(blob EnrollRequestBlob) error {
-	if blob.Platform == PlatformIOS {
+	switch blob.Platform {
+	case PlatformIOS:
 		if blob.IOSKeyID == "" || blob.IOSAttestationObject == "" || blob.Nonce == "" {
 			return fmt.Errorf("%w: RelayEnroll requires IOSKeyID, IOSAttestationObject and Nonce for platform ios", ErrInvalidEnrollBlob)
 		}
-		return nil
-	}
-	if blob.EkPublicKey == "" || blob.AkPublicArea == "" {
-		return fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea", ErrInvalidEnrollBlob)
+	case PlatformMacOS:
+		if blob.EkPublicKey == "" || blob.AkPublicArea == "" || blob.AttestationKey != nil {
+			return fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AkPublicArea, and no AttestationKey, for platform macos", ErrInvalidEnrollBlob)
+		}
+	case PlatformWindows, PlatformLinux:
+		ak := blob.AttestationKey
+		if blob.EkPublicKey == "" || ak == nil || ak.PublicArea == "" || ak.ParentPublicArea == "" || ak.QualifiedName == "" {
+			return fmt.Errorf("%w: RelayEnroll requires EkPublicKey and AttestationKey{PublicArea, ParentPublicArea, QualifiedName} for platform %s", ErrInvalidEnrollBlob, blob.Platform)
+		}
+		if blob.AkPublicArea != "" {
+			return fmt.Errorf("%w: a TPM enroll body with a top-level akPublicArea is the wire 7.0 shape; wire 8.0 nests the AK under attestationKey", ErrInvalidEnrollBlob)
+		}
+	default:
+		return fmt.Errorf("%w: RelayEnroll requires Platform windows, linux, macos or ios (got %q)", ErrInvalidEnrollBlob, blob.Platform)
 	}
 	return nil
 }
@@ -194,13 +261,13 @@ func validateEnrollBlob(blob EnrollRequestBlob) error {
 // RelayActivate relays the client's EnrollComplete() blob to RootHerald via
 // POST {baseURL}/api/v1/attest/activate, completing the enrollment. Every
 // RelayEnroll of a TPM or macOS device leads here: enrollment always issues a
-// challenge, including for a known device, because re-enrollment is how a
-// device rotates its attestation key.
+// challenge, including for a known device, because each activation creates a
+// new installation.
 //
 // It returns the terminal {DeviceID, Status, EnrolledAt} body; DeviceID is the
 // load-bearing field the backend maps to its user. An unknown, spent or
-// foreign EnrollmentID and a wrong proof are refused alike, as
-// ErrInvalidSecretKey (401) with one message.
+// foreign EnrollmentID, a wrong proof and a cross-tenant AK collision are
+// refused alike, as ErrActivationRefused (401) with one message.
 func (c *Client) RelayActivate(ctx context.Context, activation EnrollActivationResponse) (RelayActivateResponse, error) {
 	if activation.EnrollmentID == "" || (activation.DecryptedSecret == "" && activation.Signature == "") {
 		return RelayActivateResponse{}, fmt.Errorf("%w: RelayActivate requires EnrollmentID and DecryptedSecret or Signature", ErrInvalidActivation)
