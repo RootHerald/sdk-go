@@ -196,6 +196,41 @@ length as DER. RS256: PKCS#1 v1.5 over SHA-256, a modulus of at least 2048
 bits, and a signature of exactly the modulus length (256 bytes). It returns
 `false` and never panics on malformed input.
 
+## Guarantee only a device can decrypt
+
+Mint a key with `KeyPurposeDecrypt`, then encrypt to it from the backend;
+only the chip that holds the key opens the result. The private half, locked
+in the chip, signs and decrypts; the public half, in the JWK, verifies and
+encrypts.
+
+```go
+kc, err := client.IssueKeyChallenge(ctx, rh.KeyChallengeOptions{
+    Purpose:         rh.KeyPurposeDecrypt,
+    ExpectedDevices: []string{res.Device.UEID},
+})
+key, err := client.CertifyKey(ctx, kc.Nonce, certification)
+saveDeviceKey(key.DeviceID, key)
+
+// Later, without any RootHerald call: a session token only this device can
+// read. Send the JWE to the client; its RootHeraldDecrypt opens it.
+jwe, err := rh.EncryptToDevice(key, sessionToken)
+```
+
+`EncryptToDevice(key, plaintext)` returns one JWE compact serialization:
+`ECDH-ES` with a fresh ephemeral P-256 key for an EC key, `RSA-OAEP-256` for
+an RSA key, `A256GCM` for both. Anyone holding the JWK can encrypt to the
+device.
+
+TPM keys (Windows, Linux) have `Format == "jwe"` and are what this function
+encrypts to. A macOS key has `Format == "apple-ecies"` and needs an
+Apple-side encryptor: `EncryptToDevice` returns
+`ErrEnvelopeFormatNotSupported` for it. iOS mints no decrypt key. A sign key,
+a key without a format, a curve other than P-256 or an RSA modulus under 2048
+bits is `ErrInvalidArgument`.
+
+A decrypt key minted in 8.1 has an empty auth value: any local process that
+can load the key's blob can open what was sent to it.
+
 ## Errors
 
 An un-enrolled or failing device is a verdict, not an error. Only protocol,
@@ -226,7 +261,8 @@ status, and a code no sentinel covers (`posture_not_bound`, `plan_lapsed`), is
 `ErrAttestHTTP` with `APIError.Code` preserved. Input the SDK refuses locally,
 such as an empty `Nonce` or a certification that is none of the platform
 shapes, is `ErrInvalidArgument` and makes no request; a malformed enroll body
-is `ErrInvalidEnrollBlob`.
+is `ErrInvalidEnrollBlob`, and a decrypt key whose envelope `EncryptToDevice`
+cannot produce (`apple-ecies`) is `ErrEnvelopeFormatNotSupported`.
 
 A response whose `verdict.device.verdict` is not `pass`/`warn`/`fail`, or whose
 certified key is malformed, is `ErrAttestHTTP` rather than returned
