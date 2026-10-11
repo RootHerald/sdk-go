@@ -1,0 +1,22 @@
+{
+  "alg": "ECDH-ES",
+  "enc": "A256GCM",
+  "plaintext": "Um9vdEhlcmFsZCBkZXZpY2UgZW52ZWxvcGU6IG9ubHkgdGhlIGNoaXAgdGhhdCBtaW50ZWQgdGhlIGtleSBvcGVucyB0aGlzLg",
+  "recipient": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "OfVQZplZUVvoxxm-10wEjeRbmpOIrvvLsdPOwjbCkOg",
+    "y": "aXJxgbEMLnE9amDCr9EHoWqjm6py_E34D1-TaooUJ4M",
+    "d": "XC0sIPxUwJrXH7i6MJQD2tDysLf-oFR9FjKncAzO-vs"
+  },
+  "ephemeral": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "WadbxiFa2zFKpl0zxPln1-VyD1GfrezxiI2NOhN-uAM",
+    "y": "qT_lLsTc_idKnRPugjgUmYZTjazgcDRee_nY65pjR4U",
+    "d": "XdQEwBy-f0WbI1bwm7w_Ps-vfH_Lg2VyZcA_Q9b0R_A"
+  },
+  "cek": "MJ1DLEH6nL2NvdXJ3dRObSVrrJ3JtqMRHDBkVwyoB50",
+  "iv": "U42RWeIEYzcJuolo",
+  "jwe": "eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTI1NkdDTSIsImVwayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IldhZGJ4aUZhMnpGS3BsMHp4UGxuMS1WeUQxR2ZyZXp4aUkyTk9oTi11QU0iLCJ5IjoicVRfbExzVGNfaWRLblJQdWdqZ1VtWVpUamF6Z2NEUmVlX25ZNjVwalI0VSJ9fQ..U42RWeIEYzcJuolo.ZcnsCMFUGEGr1SHeHcJ-5CltEpElnsdfQYHtiE6mskZefgXpHeUCxSOBANblfH-iaa-Z-YZ8qEC8p76uDG_Tb7BDzfgQWCAP_A.LTxaOLkGRq45iS_JOuXUEg"
+}

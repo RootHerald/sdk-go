@@ -37,6 +37,11 @@
 //	    http.Error(w, "signature rejected", http.StatusForbidden)
 //	}
 //
+// A key minted with KeyPurposeDecrypt is encrypted to with EncryptToDevice,
+// which returns the JWE only that device's RootHeraldDecrypt opens:
+//
+//	jwe, _ := rootherald.EncryptToDevice(key, sessionToken)
+//
 // Enroll an installation. Every enroll is followed by activate; the client
 // keeps the AK blob EnrollBegin returned and passes it to every later attest
 // and mint:
