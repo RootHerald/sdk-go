@@ -139,6 +139,12 @@ type EnrollActivationResponse struct {
 	// Signature is the base64 ECDSA-P256-SHA256 signature over ChallengeNonce,
 	// DER or IEEE-P1363. Set for macos.
 	Signature string `json:"signature,omitempty"`
+	// NitroAttestationDocument is the NitroTPM attestation document, base64
+	// COSE_Sign1, from a NitroTPM; relayed unread.
+	NitroAttestationDocument string `json:"nitroAttestationDocument,omitempty"`
+	// NitroDocumentError is the client's report that the document request
+	// failed; relayed unread.
+	NitroDocumentError json.RawMessage `json:"nitroDocumentError,omitempty"`
 }
 
 // RelayEnrollResult is the outcome of the enroll relay leg.
