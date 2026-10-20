@@ -1,6 +1,7 @@
 package rootherald
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -334,12 +335,13 @@ func TestRelayEnroll_ErrorMapping(t *testing.T) {
 
 func TestRelayActivate_Success(t *testing.T) {
 	var gotAuth, gotPath string
+	var gotRaw []byte
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &gotBody)
+		gotRaw, _ = io.ReadAll(r.Body)
+		_ = json.Unmarshal(gotRaw, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"deviceId":   "dev-1",
@@ -371,10 +373,15 @@ func TestRelayActivate_Success(t *testing.T) {
 	if gotBody["enrollmentId"] != "enr-1" || gotBody["decryptedSecret"] != "c2VjcmV0" {
 		t.Errorf("relayed activate body = %v", gotBody)
 	}
-	for _, k := range []string{"deviceId", "challengeId", "akPublicKey", "signature"} {
+	for _, k := range []string{"deviceId", "challengeId", "akPublicKey", "signature", "nitroAttestationDocument", "nitroDocumentError"} {
 		if _, present := gotBody[k]; present {
 			t.Errorf("activate body carried %q", k)
 		}
+	}
+	// A body without the Nitro members posts exactly as before they existed:
+	// no "" and no null in their place.
+	if want := `{"enrollmentId":"enr-1","decryptedSecret":"c2VjcmV0"}`; string(gotRaw) != want {
+		t.Errorf("relayed activate body = %s, want %s", gotRaw, want)
 	}
 }
 
@@ -403,8 +410,10 @@ func TestRelayActivate_Signature(t *testing.T) {
 	if gotBody["enrollmentId"] != "enr-2" || gotBody["signature"] != "c2ln" {
 		t.Errorf("relayed activate body = %v", gotBody)
 	}
-	if _, present := gotBody["decryptedSecret"]; present {
-		t.Errorf("macOS activate body carried decryptedSecret")
+	for _, k := range []string{"decryptedSecret", "nitroAttestationDocument", "nitroDocumentError"} {
+		if _, present := gotBody[k]; present {
+			t.Errorf("macOS activate body carried %q", k)
+		}
 	}
 }
 
@@ -418,12 +427,79 @@ func TestRelayActivate_ValidatesInput(t *testing.T) {
 		{"missing proof", EnrollActivationResponse{EnrollmentID: "enr-1"}},
 		{"missing enrollmentId with secret", EnrollActivationResponse{DecryptedSecret: "s"}},
 		{"missing enrollmentId with signature", EnrollActivationResponse{Signature: "s"}},
+		// A Nitro document is evidence, not a proof: the secret is still required.
+		{"nitro document without secret", decodeActivation(t, `{"enrollmentId":"enr-1","nitroAttestationDocument":"AAAA"}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := c.RelayActivate(context.Background(), tc.in)
 			if !errors.Is(err, ErrInvalidActivation) {
 				t.Errorf("err = %v, want ErrInvalidActivation", err)
+			}
+		})
+	}
+}
+
+// decodeActivation decodes a client's activate body the way a customer backend
+// receives it, before handing it to RelayActivate.
+func decodeActivation(t *testing.T, body string) EnrollActivationResponse {
+	t.Helper()
+	var activation EnrollActivationResponse
+	if err := json.Unmarshal([]byte(body), &activation); err != nil {
+		t.Fatalf("decode activate body: %v", err)
+	}
+	return activation
+}
+
+// The Nitro members cross the relay as the client wrote them. The reordered
+// error with an unknown member fails a relay that types the error's fields.
+// Fixtures stay compact and free of <, > and &, which json.Marshal rewrites.
+func TestRelayActivate_NitroMembersPassThrough(t *testing.T) {
+	cases := []struct {
+		name   string
+		member string
+		body   string
+	}{
+		{
+			"document",
+			"nitroAttestationDocument",
+			`{"enrollmentId":"enr-1","decryptedSecret":"c2VjcmV0","nitroAttestationDocument":"hEShATgioFkBAqVp+/0="}`,
+		},
+		{
+			"error",
+			"nitroDocumentError",
+			`{"enrollmentId":"enr-1","decryptedSecret":"c2VjcmV0","nitroDocumentError":{"stage":"nsm_request","tpmRc":323,"responseShape":"Error"}}`,
+		},
+		{
+			"error reordered with unknown member",
+			"nitroDocumentError",
+			`{"enrollmentId":"enr-1","decryptedSecret":"c2VjcmV0","nitroDocumentError":{"responseShape":"Error","tpmRc":323,"stage":"nsm_request","detail":"x"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotRaw []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotRaw, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"deviceId": "dev-1", "status": "enrolled"})
+			}))
+			defer srv.Close()
+
+			c, _ := NewClient("rh_sk_test_key", WithBaseURL(srv.URL))
+			if _, err := c.RelayActivate(context.Background(), decodeActivation(t, tc.body)); err != nil {
+				t.Fatalf("RelayActivate: %v", err)
+			}
+
+			var sent, posted map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tc.body), &sent); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			if err := json.Unmarshal(gotRaw, &posted); err != nil {
+				t.Fatalf("decode posted body %s: %v", gotRaw, err)
+			}
+			if !bytes.Equal(posted[tc.member], sent[tc.member]) {
+				t.Errorf("posted %s = %s, want %s", tc.member, posted[tc.member], sent[tc.member])
 			}
 		})
 	}
