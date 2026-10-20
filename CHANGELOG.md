@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `EnrollActivationResponse` relays `nitroAttestationDocument` and
+  `nitroDocumentError` unread. The wire version is unchanged.
+
 ## 0.4.0
 
 Wire 8.1. A decrypt key minted with `KeyPurposeDecrypt` can be encrypted to
